@@ -21,7 +21,15 @@ def load(path: str|Path = DATA_PATH) -> pd.DataFrame:
     print(f"  [1] loaded {len(df):,} rows x {df.shape[1]} columns from {path}")
     return df
 
-
+def number_from_text(series: pd.Series) -> pd.Series:
+    #Convert raw to real numbers, anything unreadable becomes NaN
+    cleaned = (
+        series.astype("string")
+        .str.replace(r"\s", "", regex=True)
+        .str.replace(",", ".", regex=False)
+        .str.extract(r"(\d+\.?\d*)", expand=False)
+    )
+    return pd.to_numeric(cleaned, errors="coerce")
 
 
 
