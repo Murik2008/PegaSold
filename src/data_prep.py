@@ -21,15 +21,19 @@ ADVERT_URL = "estate_rel_url_x"
 # Azerbaijan's bounding box. A coordinate outside this is broken data.
 LAT_RANGE, LNG_RANGE = (38.3, 41.95), (44.7, 50.6)
 
+#for def apply_scope
+KEEP_CITY = "bakı"
+KEEP_CATEGORIES = ("Yeni tikili", "Köhnə tikili", "Həyət evi/Bağ evi")
+
 
 def load(path: str|Path = DATA_PATH) -> pd.DataFrame:
-    #Read the raw scv
+    """Read the raw scv"""
     df = pd.read_csv(path, low_memory=False)
     print(f"  [1] loaded {len(df):,} rows x {df.shape[1]} columns from {path}")
     return df
 
 def number_from_text(series: pd.Series) -> pd.Series:
-    #Convert raw to real numbers, anything unreadable becomes NaN
+    """Convert raw to real numbers, anything unreadable becomes NaN"""
     cleaned = (
         series.astype("string")
         .str.replace(r"\s", "", regex=True)
@@ -38,9 +42,8 @@ def number_from_text(series: pd.Series) -> pd.Series:
     )
     return pd.to_numeric(cleaned, errors="coerce")
 
-
 def parse(df: pd.DataFrame) -> pd.DataFrame:
-    #Build tidy, correctly typed columns from the raw text ones.
+    """Build tidy, correctly typed columns from the raw text ones."""
     
     out = pd.DataFrame(index=df.index)
     # "/items/4521724" -> "4521724". One id per advert, used for deduplication
@@ -96,4 +99,63 @@ def parse(df: pd.DataFrame) -> pd.DataFrame:
     print(f"  [2] parsed {out.shape[1]} working columns")
     return out
 
+def deduplicate(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    #100,775 → 63,241, removing 37% of rows
+    """Reduce the file to one row per property.
+    Two passes, because there are two different kinds of duplicate, and both
+    must happen before the split — otherwise the same flat lands in train and
+    test and the test score becomes a memory test.
+    """
+    start = len(df)
 
+    # Pass 1: the same advert scraped on several days. Sorting by scrape date
+    # and keeping the last row keeps the most recent asking price.
+    df = (df.sort_values(["item_id", "scraped"])
+            .drop_duplicates(subset=["item_id"], keep="last"))
+    after_advert = len(df)
+
+    # Pass 2: one property posted twice under two advert addresses. If two
+    # adverts agree on position, size, rooms AND price, it is the same flat.
+    twin_key = ["lat", "lng", "area_m2", "rooms", "price"]
+    complete = df[twin_key].notna().all(axis=1)
+    is_twin = complete & df.duplicated(subset=twin_key, keep="first")
+    df = df[~is_twin]
+    after_twins = len(df)
+
+    stats = {
+        "rows_before": start,
+        "rows_removed_by_repeat_scrapes": start - after_advert,
+        "rows_removed_by_reposted_twins": after_advert - after_twins,
+        "rows_after": after_twins,
+    }
+    print(f"  [3] deduplicated {start:,} -> {after_twins:,} rows "
+          f"(-{start - after_advert:,} repeat scrapes, "
+          f"-{after_advert - after_twins:,} reposts)")
+    return df.reset_index(drop=True), stats
+
+def apply_scope(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    #63,241 → 57,069 rows
+    """Keep only Baku residential property.
+    Two reasons, both measured in reports/eda section 11:
+      - 99.6% of adverts are in Baku. The 260 elsewhere are a different market
+        sampled 260 times: too few to learn from, enough to add noise.
+      - land / commercial units / offices / garages record no rooms and no
+        floor, and land's area is in sot rather than m². They are not the same
+        prediction problem.
+    `category` stays as a feature, so the model can still tell a house from a
+    new-build flat.
+    """
+    start = len(df)
+    keep = df["city"].eq(KEEP_CITY) & df["category"].isin(KEEP_CATEGORIES)
+    df = df[keep]
+
+    stats = {
+        "rows_before": start,
+        "rows_removed_by_scope": start - len(df),
+        "rows_after": len(df),
+        "kept_city": KEEP_CITY,
+        "kept_categories": list(KEEP_CATEGORIES),
+    }
+    print(f"  [4] scope: {start:,} -> {len(df):,} rows "
+          f"(Baku + {len(KEEP_CATEGORIES)} residential categories)")
+    return df.reset_index(drop=True), stats
