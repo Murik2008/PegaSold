@@ -8,6 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import hashlib #for fingerprint
+import json #for report
 
 RANDOM_SEED = 42 #for reproducibility
 DATA_PATH = "data/bina_az_sale.csv"
@@ -207,3 +209,70 @@ def apply_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return df.reset_index(drop=True), stats
 
 
+def fingerprint(ids: pd.Series) -> str:
+    """A short, stable hash of a set of item ids."""
+    joined = "\n".join(sorted(ids.astype(str)))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def run_cleaning(input_path: str | Path = DATA_PATH, output_dir: str | Path = OUTPUT_DIR) -> dict:
+    """Run the cleaning stages and record every number they produced.
+
+    Temporary harness for the cleaning half of the pipeline. Once split,
+    fit_preprocessor and build_features exist, this folds into run().
+    """
+    print(f"\ndata_prep (cleaning): {input_path}")
+
+    raw = load(input_path)
+    raw_rows = len(raw)
+
+    df = parse(raw)
+    df, dedup_stats = deduplicate(df)
+    df, scope_stats = apply_scope(df)
+    df, filter_stats = apply_filters(df)
+
+    report = {
+        "random_seed": RANDOM_SEED,
+        "raw_rows": raw_rows,
+
+        "rows_after_deduplication": dedup_stats["rows_after"],
+        "rows_removed_by_item_deduplication":
+            dedup_stats["rows_removed_by_repeat_scrapes"]
+            + dedup_stats["rows_removed_by_reposted_twins"],
+        "deduplication": dedup_stats,
+
+        "scope": {
+            "rows_after_scope": scope_stats["rows_after"],
+            "rows_removed_by_scope": scope_stats["rows_removed_by_scope"],
+            "kept_city": scope_stats["kept_city"],
+            "kept_categories": scope_stats["kept_categories"],
+        },
+
+        "rows_after_cleaning": filter_stats["rows_after"],
+        "domain_filters": filter_stats,
+
+        # The ranges every surviving row is guaranteed to lie inside. We do not
+        # winsorize: a row outside a window is a broken record, so apply_filters removes it outright.
+        # The bounds are recorded here so src/validate.py can confirm they hold.
+        "value_ranges": {
+            "method": "rows outside the window are removed, not clipped",
+            "fences": {
+                "price": {"low": MIN_PRICE, "high": MAX_PRICE},
+                "area_m2": {"low": MIN_AREA, "high": MAX_AREA},
+            },
+        },
+
+        "final_rows": len(df),
+        "cleaned_item_id_sha256": fingerprint(df["item_id"]),
+    }
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "preprocessing_report.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\n  wrote -> {out / 'preprocessing_report.json'}")
+    return report
+
+
+if __name__ == "__main__":
+    run_cleaning()
