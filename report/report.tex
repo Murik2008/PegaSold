@@ -1,0 +1,183 @@
+% =====================================================================
+%  IEEE-STYLE CONFERENCE REPORT TEMPLATE  (self-contained)
+%  MLE-AI-201 Machine Learning -- Final Project
+%
+%  This template MIMICS the IEEE two-column conference look using only
+%  standard LaTeX packages. It does NOT depend on IEEEtran.cls, so it
+%  compiles anywhere (tectonic, pdflatex, Overleaf) with nothing extra.
+%
+%  Build:   tectonic report.tex      (recommended)
+%     or:   pdflatex report.tex ; pdflatex report.tex
+% =====================================================================
+\documentclass[10pt,twocolumn,a4paper]{article}
+
+% ---- Geometry: IEEE-like margins / two narrow columns ----------------
+\usepackage[a4paper,top=0.75in,bottom=1.0in,left=0.68in,right=0.68in,columnsep=0.25in]{geometry}
+
+% ---- Times-like font (standard, ships with every TeX distro) ---------
+\usepackage{mathptmx}          % Times text + math
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}    % allows accented / Azerbaijani chars
+
+% ---- Common, dependency-free packages --------------------------------
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage{cite}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+
+% ---- IEEE-style section headings -------------------------------------
+\renewcommand{\thesection}{\Roman{section}}
+\renewcommand{\thesubsection}{\Alph{subsection}}
+\titleformat{\section}[block]{\centering\normalsize\scshape}{\thesection.}{0.5em}{}
+\titleformat{\subsection}[block]{\normalsize\itshape}{\thesubsection.}{0.5em}{}
+\titlespacing*{\section}{0pt}{1.4ex plus 1ex minus .2ex}{1ex}
+\titlespacing*{\subsection}{0pt}{1.0ex plus 1ex minus .2ex}{0.6ex}
+
+% ---- Abstract / Index-Terms in the IEEE boldface-dash style ----------
+\newcommand{\abstractkw}[1]{\noindent\textbf{\textit{#1}}}
+
+\captionsetup{font=small,labelsep=period}
+\setlength{\parindent}{1em}
+
+% =====================================================================
+\begin{document}
+
+% ------------------------- TITLE BLOCK --------------------------------
+\twocolumn[
+  \begin{@twocolumnfalse}
+  \begin{center}
+    {\LARGE\bfseries Your Project Title Here:\\A Clear, Specific Subtitle\par}
+    \vspace{1.2em}
+    % Authors: Surname, Given name --- alphabetical by surname.
+    {\large
+      Aliyeva, Aysel\quad Mammadov, Murad\quad Rustamli, Rustam\par}
+    \vspace{0.5em}
+    {\itshape MLE-AI-201 Machine Learning, AI Academy --- Cohort II\par}
+    \vspace{1.4em}
+  \end{center}
+  \begin{quote}
+    \small
+    \abstractkw{Abstract---}% IEEE uses an em-dash after "Abstract"
+    One paragraph, roughly 150--250 words. State the problem (price
+    prediction and the derived price-tier task on the bina.az dataset),
+    what you built from scratch (a decision tree and an SVM), the key
+    result (headline metrics vs.\ scikit-learn), and the main takeaway.
+    Write it last. \textbf{End the abstract with your repository link},
+    per IEEE convention:
+    \href{https://github.com/your-team/your-repo}{\texttt{github.com/your-team/your-repo}}
+    (tag \texttt{v1.0-final}).
+
+    \vspace{0.6em}
+    \abstractkw{Index Terms---}decision tree, support-vector machine,
+    Pegasos, regression, classification, real-estate price prediction.
+  \end{quote}
+  \vspace{1.0em}
+  \end{@twocolumnfalse}
+]
+
+% =====================================================================
+\section{Introduction}
+Motivate the problem and state your contributions as a short bulleted or
+inline list. What is the task, why does it matter, and what did your
+team do? Keep background brief; cite sources like this~\cite{pegasos}.
+
+\section{Related Work / Background}
+Briefly place your work in context: decision trees (impurity, information
+gain), the soft-margin SVM and the hinge-loss primal, and the Pegasos
+sub-gradient solver you used~\cite{pegasos}. One or two short paragraphs.
+
+\section{Data and Preprocessing}
+Describe the bina.az dataset: size, key columns, and the cleaning you
+did (currency, types, missing values, duplicates, outliers). State the
+two tasks (price regression; price-tier classification), how you derived
+the tier label, and your train/validation/test split. \textbf{Name the
+leakage columns you removed and why.}
+
+\begin{table}[t]
+  \centering
+  \caption{Dataset summary after cleaning.}
+  \label{tab:data}
+  \begin{tabular}{@{}lr@{}}
+    \toprule
+    Property & Value \\
+    \midrule
+    Rows (after cleaning)       & --- \\
+    Features used               & --- \\
+    Train / Val / Test split    & --- / --- / --- \\
+    Price-tier balance (\%)     & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Method}
+\subsection{Decision tree (from scratch)}
+Describe your impurity criteria (Gini / entropy / MSE reduction), the
+split search, recursion, leaf rule, and hyperparameters.
+
+\subsection{Support-vector machine (from scratch)}
+State the objective and the Pegasos update you implemented:
+\begin{equation}
+  J(\mathbf{w},b)=\tfrac{\lambda}{2}\lVert\mathbf{w}\rVert^{2}
+  +\tfrac{1}{n}\sum_{i=1}^{n}\max\!\big(0,\,1-y_i(\mathbf{w}^{\top}\mathbf{x}_i+b)\big).
+\end{equation}
+Explain the learning-rate schedule, feature scaling, and your non-linear
+extension (kernelised Pegasos or random Fourier features), if any.
+
+\section{Experimental Setup}
+Metrics (RMSE/MAE/$R^2$ for regression; precision/recall/F1/AUC for
+classification), hyperparameter search protocol, seeds, and the
+scikit-learn baselines you compared against (with matched settings).
+
+\section{Results}
+Lead with a results table; back every claim with a number or figure.
+
+\begin{table}[t]
+  \centering
+  \caption{Headline results (test set, mean $\pm$ std over folds).}
+  \label{tab:results}
+  \begin{tabular}{@{}lcc@{}}
+    \toprule
+    Model & Task A (RMSE) & Task B (F1) \\
+    \midrule
+    Ours: decision tree     & --- & --- \\
+    Ours: SVM (Pegasos)     & n/a & --- \\
+    scikit-learn baseline   & --- & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/your_plot.pdf}
+  \fbox{\parbox[c][3.2cm][c]{0.9\linewidth}{\centering\small
+    Replace with a figure (e.g.\ validation curve, confusion matrix,
+    or feature importances). Save plots to \texttt{figures/}.}}
+  \caption{One clear figure beats ten decorative ones.}
+  \label{fig:main}
+\end{figure}
+
+\section{Discussion and Limitations}
+Where and why each model fails (luxury outliers, sparse districts,
+scaling effects), the bias--variance story, and honest limitations.
+
+\section{Conclusion}
+One short paragraph: what you found and what you would do next.
+
+\section*{Tools and Acknowledgements}
+Disclose any AI-assistant use and what it was used for, plus data/code
+you built on. (Required.)
+
+% =====================================================================
+\begin{thebibliography}{9}
+\bibitem{pegasos}
+S.~Shalev-Shwartz, Y.~Singer, N.~Srebro, and A.~Cotter,
+``Pegasos: primal estimated sub-gradient solver for SVM,''
+\emph{Mathematical Programming}, vol.~127, no.~1, pp.~3--30, 2011.
+\end{thebibliography}
+
+\end{document}
