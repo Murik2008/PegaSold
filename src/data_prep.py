@@ -15,6 +15,13 @@ OUTPUT_DIR = "data/processed"
 
 LEAKAGE_COLUMNS = ["total_price", "unit_price","description"] #leakage columns
 
+# The column holding the advert's page address, e.g. "/items/4521724".
+ADVERT_URL = "estate_rel_url_x"
+
+# Azerbaijan's bounding box. A coordinate outside this is broken data.
+LAT_RANGE, LNG_RANGE = (38.3, 41.95), (44.7, 50.6)
+
+
 def load(path: str|Path = DATA_PATH) -> pd.DataFrame:
     #Read the raw scv
     df = pd.read_csv(path, low_memory=False)
@@ -32,5 +39,61 @@ def number_from_text(series: pd.Series) -> pd.Series:
     return pd.to_numeric(cleaned, errors="coerce")
 
 
+def parse(df: pd.DataFrame) -> pd.DataFrame:
+    #Build tidy, correctly typed columns from the raw text ones.
+    
+    out = pd.DataFrame(index=df.index)
+    # "/items/4521724" -> "4521724". One id per advert, used for deduplication
+    # and for the split fingerprints.
+    out["item_id"] = df[ADVERT_URL].astype("string").str.extract(r"(\d+)", expand=False)
+    out["scraped"] = pd.to_datetime(df["day_x"], format="%d.%m.%Y", errors="coerce")
+
+    out["price"] = pd.to_numeric(df["price"], errors="coerce")
+
+    area = number_from_text(df["Sahə"])
+    is_land = df["Kateqoriya"].eq("Torpaq")
+    out["area_m2"] = area.where(~is_land)   # land's area is in the wrong unit -> NaN
+
+    # Convert to m² so every area in the frame is in one unit. Flats have no plot, so NaN
+    # here means "no land"
+    out["land_m2"] = number_from_text(df["Torpaq sahəsi"]) * 100
+
+    out["rooms"] = pd.to_numeric(df["Otaq sayı"], errors="coerce")
+
+    # "7 / 9" means the 7th floor of a 9-storey building.
+    floors = df["Mərtəbə"].astype("string").str.extract(r"(\d+)\s*/\s*(\d+)")
+    out["floor"] = pd.to_numeric(floors[0], errors="coerce")
+    out["n_floors"] = pd.to_numeric(floors[1], errors="coerce")
+
+    out["city"] = df["city"]
+    out["category"] = df["Kateqoriya"]
+    out["location"] = df["location"]
+
+    # A coordinate outside Azerbaijan is broken. We blank the coordinate rather
+    # than delete the row: the rest of that advert is still perfectly usable.
+    lat = pd.to_numeric(df["lat"], errors="coerce")
+    lng = pd.to_numeric(df["lng"], errors="coerce")
+    inside = lat.between(*LAT_RANGE) & lng.between(*LNG_RANGE)
+    out["lat"] = lat.where(inside)
+    out["lng"] = lng.where(inside)
+
+    # These five are only ever written when the answer is yes, convert it to column with 1/0.
+    out["has_repair"] = df["Təmir"].eq("var").astype(int)
+    out["has_bill_of_sale"] = df["Çıxarış"].eq("var").astype(int)
+    out["has_mortgage"] = df["İpoteka"].notna().astype(int)
+    out["is_vip"] = df["vip"].notna().astype(int)
+    out["is_featured"] = df["featured"].notna().astype(int)
+
+    # Who is selling. Agents list 90% of adverts and at a higher median price.
+    out["sold_by_owner"] = df["owner_title"].eq("mülkiyyətçi").astype(int)
+
+    # `repair`, `bill_of_sale` and `mortgage` are not read at all. They
+    # agree with Təmir / Çıxarış / İpoteka on 100.0% of rows (reports/eda
+    # section 7) — the same column twice. We keep one of each pair.
+    # `views` is not read either: it counts people who opened the advert AFTER
+    # it went live, so it cannot be known about a flat you are about to price.
+
+    print(f"  [2] parsed {out.shape[1]} working columns")
+    return out
 
 
