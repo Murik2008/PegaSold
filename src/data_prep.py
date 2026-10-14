@@ -15,15 +15,20 @@ OUTPUT_DIR = "data/processed"
 
 LEAKAGE_COLUMNS = ["total_price", "unit_price","description"] #leakage columns
 
-# The column holding the advert's page address, e.g. "/items/4521724".
+#The column holding the advert's page address, e.g. "/items/4521724".
 ADVERT_URL = "estate_rel_url_x"
 
-# Azerbaijan's bounding box. A coordinate outside this is broken data.
+#Azerbaijan's bounding box. A coordinate outside this is broken data.
 LAT_RANGE, LNG_RANGE = (38.3, 41.95), (44.7, 50.6)
 
-#for def apply_scope
+#For def apply_scope
 KEEP_CITY = "bakı"
 KEEP_CATEGORIES = ("Yeni tikili", "Köhnə tikili", "Həyət evi/Bağ evi")
+
+#Fixed, declared thresholds.
+MIN_PRICE, MAX_PRICE = 10_000, 5_000_000            # AZN
+MIN_PRICE_PER_M2, MAX_PRICE_PER_M2 = 200, 20_000    # AZN per m²
+MIN_AREA, MAX_AREA = 10, 2_000                      # m²
 
 
 def load(path: str|Path = DATA_PATH) -> pd.DataFrame:
@@ -159,3 +164,46 @@ def apply_scope(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     print(f"  [4] scope: {start:,} -> {len(df):,} rows "
           f"(Baku + {len(KEEP_CATEGORIES)} residential categories)")
     return df.reset_index(drop=True), stats
+
+def apply_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Drop records that cannot be true, and count every one we drop.
+
+    The thresholds are the fixed numbers declared at the top of this file.
+    They are NOT percentiles of this data: a rule like "drop the top 1%"
+    computed over the whole file would let the test set decide what the
+    training set contains.
+    """
+    start = len(df)
+    df = df.copy()
+
+    # A flat has no plot of land, so a missing land size means 0, not unknown.
+    df["land_m2"] = df["land_m2"].fillna(0.0)
+
+    # Each rule, kept separately so the report can say what each one cost.
+    price_per_m2 = df["price"] / df["area_m2"]
+    rules = {
+        "price_outside_window": ~df["price"].between(MIN_PRICE, MAX_PRICE),
+        "area_missing_or_outside_window": ~df["area_m2"].between(MIN_AREA, MAX_AREA),
+        "price_per_m2_outside_window": ~price_per_m2.between(MIN_PRICE_PER_M2, MAX_PRICE_PER_M2),
+        "floor_above_building_height": df["floor"] > df["n_floors"],
+    }
+    removed = {name: int(mask.sum()) for name, mask in rules.items()}
+
+    drop = pd.concat(rules.values(), axis=1).any(axis=1)
+    df = df[~drop]
+
+    stats = {
+        "rows_before": start,
+        "removed_by_rule": removed,          # rules overlap, so these overlap too
+        "total_removed_by_domain_filters": int(drop.sum()),
+        "rows_after": len(df),
+        "price_window_AZN": [MIN_PRICE, MAX_PRICE],
+        "price_per_m2_window_AZN": [MIN_PRICE_PER_M2, MAX_PRICE_PER_M2],
+        "area_window_m2": [MIN_AREA, MAX_AREA],
+    }
+    print(f"  [5] filters: {start:,} -> {len(df):,} rows (-{int(drop.sum()):,})")
+    for name, n in removed.items():
+        print(f"        {name}: {n:,}")
+    return df.reset_index(drop=True), stats
+
+
