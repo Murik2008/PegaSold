@@ -438,7 +438,7 @@ def save(parts: dict[str, pd.DataFrame], rules: dict, report: dict,
 
 # Build Targets:
 def build_targets(df: pd.DataFrame, rules: dict) -> tuple[np.ndarray, np.ndarray]:
-    y_log = np.log(df["prices"].to_numpy(dtype=float)) # Task A
+    y_log = np.log(df["price"].to_numpy(dtype=float)) # Task A
     tier = (df["price"] >= rules["tier_threshold_AZN"]).to_numpy().astype(int) # Task B
     return y_log, tier
 
