@@ -290,12 +290,6 @@ def run(input_path: str | Path, output_dir: str | Path) -> dict:
           f"tier threshold {rules['tier_threshold_AZN']:,.0f} AZN\n")
     return report
 
-
-if __name__ == "__main__":
-    run()
-
-
-
     # --- 1. SPLIT ---
 TRAIN_SHARE = 0.70
 VALID_SHARE = 0.15
