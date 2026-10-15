@@ -276,3 +276,151 @@ def run_cleaning(input_path: str | Path = DATA_PATH, output_dir: str | Path = OU
 
 if __name__ == "__main__":
     run_cleaning()
+
+
+
+    # --- 1. SPLIT ---
+TRAIN_SHARE = 0.70
+VALID_SHARE = 0.15
+
+def split(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    rng = np.random.default_rng(RANDOM_SEED)
+    order = rng.permutation(len(df))
+
+    n_train = int(len(df) * TRAIN_SHARE)
+    n_valid = int(len(df) * VALID_SHARE)
+
+    parts = {
+        "train": df.iloc[order[:n_train]],
+        "validation": df.iloc[order[n_train:n_train + n_valid]],
+        "test": df.iloc[order[n_train + n_valid:]],
+    }
+    parts = {k: v.reset_index(drop=True) for k, v in parts.items()}
+    print("  [6] split " + ", ".join(f"{k}={len(v):,}" for k, v in parts.items()))
+    return parts
+
+
+# --- 2. FIT PREPROCESSOR ---
+BAKU_CENTRE_LAT, BAKU_CENTRE_LNG = 40.3667, 49.8352
+KM_PER_DEGREE_LAT = 111.0
+KM_PER_DEGREE_LNG = 111.0 * float(np.cos(np.radians(BAKU_CENTRE_LAT)))
+MIN_ROWS_PER_LOCATION = 100
+
+CONTINUOUS_FEATURES = [
+    "log_area_m2", "rooms", "floor", "n_floors", "log_land_m2", "lat", "lng",
+    "distance_to_centre_km", "floor_ratio", "area_per_room", "log_land_ratio",
+]
+
+BINARY_FEATURES = [
+    "has_floor_info", "has_repair", "has_bill_of_sale", "has_mortgage",
+    "is_vip", "is_featured", "sold_by_owner",
+    "is_ground_floor", "is_top_floor",
+]
+
+def fit_preprocessor(train: pd.DataFrame) -> dict:
+    counts = train["location"].value_counts()
+    locations = sorted(counts[counts >= MIN_ROWS_PER_LOCATION].index.tolist())
+
+    fill_values = {col: float(train[col].median())
+                   for col in ["rooms", "lat", "lng"]}
+
+    tier_threshold = float(train["price"].median())
+
+    rules: dict = {
+        "locations": locations,
+        "categories": list(KEEP_CATEGORIES),
+        "fill_values": fill_values,
+        "tier_threshold_AZN": tier_threshold,
+    }
+
+    unscaled = build_features(train, rules, scale=False)
+    rules["scaler_mean"] = {c: float(unscaled[c].mean()) for c in CONTINUOUS_FEATURES}
+    rules["scaler_std"] = {c: float(unscaled[c].std(ddof=0)) or 1.0
+                           for c in CONTINUOUS_FEATURES}
+    rules["feature_names"] = unscaled.columns.tolist()
+
+    print(f"  [7] fitted on train: {len(locations)} named locations, "
+          f"tier threshold {tier_threshold:,.0f} AZN")
+    return rules
+
+
+# --- 3. BUILD FEATURES ---
+def build_features(df: pd.DataFrame, rules: dict, scale: bool = True) -> pd.DataFrame:
+    out = pd.DataFrame(index=df.index)
+
+    out["log_area_m2"] = np.log(df["area_m2"])
+    out["log_land_m2"] = np.log1p(df["land_m2"])
+    out["rooms"] = df["rooms"].fillna(rules["fill_values"]["rooms"])
+    out["lat"] = df["lat"].fillna(rules["fill_values"]["lat"])
+    out["lng"] = df["lng"].fillna(rules["fill_values"]["lng"])
+
+    has_floor = df["floor"].notna() & df["n_floors"].notna()
+    out["floor"] = df["floor"].where(has_floor, 0.0)
+    out["n_floors"] = df["n_floors"].where(has_floor, 0.0)
+
+    km_north = (out["lat"] - BAKU_CENTRE_LAT) * KM_PER_DEGREE_LAT
+    km_east = (out["lng"] - BAKU_CENTRE_LNG) * KM_PER_DEGREE_LNG
+    out["distance_to_centre_km"] = np.sqrt(km_north ** 2 + km_east ** 2)
+
+    out["floor_ratio"] = np.where(
+        has_floor & (df["n_floors"] > 0),
+        df["floor"] / df["n_floors"].replace(0, np.nan),
+        0.0,
+    )
+    out["is_ground_floor"] = (has_floor & df["floor"].eq(1)).astype(int)
+    out["is_top_floor"] = (has_floor & df["floor"].eq(df["n_floors"])).astype(int)
+
+    out["area_per_room"] = df["area_m2"] / out["rooms"].clip(lower=1)
+    out["log_land_ratio"] = np.log1p(df["land_m2"] / df["area_m2"])
+
+    out["has_floor_info"] = has_floor.astype(int)
+    for col in BINARY_FEATURES:
+        if col not in ("has_floor_info", "is_ground_floor", "is_top_floor"):
+            out[col] = df[col].astype(int)
+
+    for name in rules["categories"]:
+        out[f"category={name}"] = df["category"].eq(name).astype(int)
+
+    known = set(rules["locations"])
+    for name in rules["locations"]:
+        out[f"location={name}"] = df["location"].eq(name).astype(int)
+    out["location=other"] = (~df["location"].isin(known)).astype(int)
+
+    if scale:
+        for col in CONTINUOUS_FEATURES:
+            out[col] = (out[col] - rules["scaler_mean"][col]) / rules["scaler_std"][col]
+
+    return out.astype(float)
+
+
+# --- 4. SAVE ---
+READABLE_COLUMNS = [
+    "item_id", "price", "log_price", "area_m2", "rooms", "floor",
+    "n_floors", "land_m2", "lat", "lng", "category", "location", "scraped",
+    "has_repair", "has_bill_of_sale", "has_mortgage",
+    "is_vip", "is_featured", "sold_by_owner",
+]
+
+def save(parts: dict[str, pd.DataFrame], rules: dict, report: dict,
+         output_dir: str | Path) -> None:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    suffix = {"train": "train", "validation": "valid", "test": "test"}
+
+    for name, frame in parts.items():
+        X = build_features(frame, rules).to_numpy()
+        y_log, tier = build_targets(frame, rules)
+        s = suffix[name]
+        np.save(out / f"X_{s}.npy", X)
+        np.save(out / f"y_{s}_log.npy", y_log)
+        np.save(out / f"tier_{s}.npy", tier)
+        readable = frame.assign(log_price=np.log(frame["price"]))
+        readable[READABLE_COLUMNS].to_csv(out / f"{s}_clean.csv", index=False)
+
+    pd.DataFrame({"feature": rules["feature_names"]}).to_csv(
+        out / "feature_names.csv", index=False)
+    (out / "preprocessing_report.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    print(f"  [9] wrote arrays, tables and preprocessing_report.json to {out}/")
