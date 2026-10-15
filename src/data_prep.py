@@ -217,13 +217,9 @@ def fingerprint(ids: pd.Series) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
 
 
-def run_cleaning(input_path: str | Path = DATA_PATH, output_dir: str | Path = OUTPUT_DIR) -> dict:
-    """Run the cleaning stages and record every number they produced.
-
-    Temporary harness for the cleaning half of the pipeline. Once split,
-    fit_preprocessor and build_features exist, this folds into run().
-    """
-    print(f"\ndata_prep (cleaning): {input_path}")
+def run(input_path: str | Path, output_dir: str | Path) -> dict:
+    """Run every step in order and return the report dictionary."""
+    print(f"\ndata_prep: {input_path} -> {output_dir}")
 
     raw = load(input_path)
     raw_rows = len(raw)
@@ -232,6 +228,14 @@ def run_cleaning(input_path: str | Path = DATA_PATH, output_dir: str | Path = OU
     df, dedup_stats = deduplicate(df)
     df, scope_stats = apply_scope(df)
     df, filter_stats = apply_filters(df)
+
+    parts = split(df)
+    rules = fit_preprocessor(parts["train"])
+
+    # Build the training matrix once here purely to count the columns for the
+    # report; save() rebuilds it per split.
+    n_features = build_features(parts["train"], rules).shape[1]
+    print(f"  [8] built {n_features} features per row")
 
     report = {
         "random_seed": RANDOM_SEED,
@@ -254,8 +258,9 @@ def run_cleaning(input_path: str | Path = DATA_PATH, output_dir: str | Path = OU
         "domain_filters": filter_stats,
 
         # The ranges every surviving row is guaranteed to lie inside. We do not
-        # winsorize: a row outside a window is a broken record, so apply_filters removes it outright.
-        # The bounds are recorded here so src/validate.py can confirm they hold.
+        # winsorize (clip an extreme value back to a fence): a row outside a
+        # window is a broken record, so step 5 removes it outright. The bounds
+        # are recorded here so src/validate.py can confirm they hold.
         "value_ranges": {
             "method": "rows outside the window are removed, not clipped",
             "fences": {
@@ -265,19 +270,29 @@ def run_cleaning(input_path: str | Path = DATA_PATH, output_dir: str | Path = OU
         },
 
         "final_rows": len(df),
-        "cleaned_item_id_sha256": fingerprint(df["item_id"]),
+        "split_rows": {k: len(v) for k, v in parts.items()},
+        "split_item_id_sha256": {k: fingerprint(v["item_id"]) for k, v in parts.items()},
+
+        "leakage_columns_removed": LEAKAGE_COLUMNS,
+        "tier_threshold_AZN": rules["tier_threshold_AZN"],
+
+        "n_processed_features": n_features,
+        "numeric_features": CONTINUOUS_FEATURES,
+        "binary_features": BINARY_FEATURES,
+        "n_location_columns": len(rules["locations"]) + 1,   # + "other"
+        "feature_names": rules["feature_names"],
+        "scaler_mean": rules["scaler_mean"],
+        "scaler_std": rules["scaler_std"],
     }
 
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "preprocessing_report.json").write_text(
-        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"\n  wrote -> {out / 'preprocessing_report.json'}")
+    save(parts, rules, report, output_dir)
+    print(f"done: {len(df):,} rows, {n_features} features, "
+          f"tier threshold {rules['tier_threshold_AZN']:,.0f} AZN\n")
     return report
 
 
 if __name__ == "__main__":
-    run_cleaning()
+    run()
 
 
 
@@ -443,7 +458,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    run_cleaning(args.input, args.output_dir)
+    run(args.input, args.output_dir)
     return 0
 
 
