@@ -6,6 +6,8 @@ SPLIT ONLY, so nothing leaks from validation or test into the model.
 from __future__ import annotations
 
 from pathlib import Path
+
+import argparse
 import numpy as np
 import pandas as pd
 import hashlib #for fingerprint
@@ -424,3 +426,26 @@ def save(parts: dict[str, pd.DataFrame], rules: dict, report: dict,
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"  [9] wrote arrays, tables and preprocessing_report.json to {out}/")
+
+# Build Targets:
+def build_targets(df: pd.DataFrame, rules: dict) -> tuple[np.ndarray, np.ndarray]:
+    y_log = np.log(df["prices"].to_numpy(dtype=float)) # Task A
+    tier = (df["price"] >= rules["tier_threshold_AZN"]).to_numpy().astype(int) # Task B
+    return y_log, tier
+
+# Argparse, run and main:
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Prepare the bina.az data for modelling.")
+    p.add_argument("--input", default="data/bina_az_sale.csv")
+    p.add_argument("--output-dir", default="data/processed")
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    run_cleaning(args.input, args.output_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
