@@ -34,6 +34,34 @@ MIN_PRICE, MAX_PRICE = 10_000, 5_000_000            # AZN
 MIN_PRICE_PER_M2, MAX_PRICE_PER_M2 = 200, 20_000    # AZN per m²
 MIN_AREA, MAX_AREA = 10, 2_000                      # m²
 
+#For splitting
+TRAIN_SHARE = 0.70
+VALID_SHARE = 0.15
+
+#Fit preprocessor
+BAKU_CENTRE_LAT, BAKU_CENTRE_LNG = 40.3667, 49.8352
+KM_PER_DEGREE_LAT = 111.0
+KM_PER_DEGREE_LNG = 111.0 * float(np.cos(np.radians(BAKU_CENTRE_LAT)))
+MIN_ROWS_PER_LOCATION = 100
+
+CONTINUOUS_FEATURES = [
+    "log_area_m2", "rooms", "floor", "n_floors", "log_land_m2", "lat", "lng",
+    "distance_to_centre_km", "floor_ratio", "area_per_room", "log_land_ratio",
+]
+
+BINARY_FEATURES = [
+    "has_floor_info", "has_repair", "has_bill_of_sale", "has_mortgage",
+    "is_vip", "is_featured", "sold_by_owner",
+    "is_ground_floor", "is_top_floor",
+]
+
+#For saving readable columns
+READABLE_COLUMNS = [
+    "item_id", "price", "log_price", "area_m2", "rooms", "floor",
+    "n_floors", "land_m2", "lat", "lng", "category", "location", "scraped",
+    "has_repair", "has_bill_of_sale", "has_mortgage",
+    "is_vip", "is_featured", "sold_by_owner",
+]
 
 def load(path: str|Path = DATA_PATH) -> pd.DataFrame:
     """Read the raw scv"""
@@ -290,9 +318,6 @@ def run(input_path: str | Path, output_dir: str | Path) -> dict:
           f"tier threshold {rules['tier_threshold_AZN']:,.0f} AZN\n")
     return report
 
-    # --- 1. SPLIT ---
-TRAIN_SHARE = 0.70
-VALID_SHARE = 0.15
 
 def split(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     rng = np.random.default_rng(RANDOM_SEED)
@@ -310,23 +335,6 @@ def split(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     print("  [6] split " + ", ".join(f"{k}={len(v):,}" for k, v in parts.items()))
     return parts
 
-
-# --- 2. FIT PREPROCESSOR ---
-BAKU_CENTRE_LAT, BAKU_CENTRE_LNG = 40.3667, 49.8352
-KM_PER_DEGREE_LAT = 111.0
-KM_PER_DEGREE_LNG = 111.0 * float(np.cos(np.radians(BAKU_CENTRE_LAT)))
-MIN_ROWS_PER_LOCATION = 100
-
-CONTINUOUS_FEATURES = [
-    "log_area_m2", "rooms", "floor", "n_floors", "log_land_m2", "lat", "lng",
-    "distance_to_centre_km", "floor_ratio", "area_per_room", "log_land_ratio",
-]
-
-BINARY_FEATURES = [
-    "has_floor_info", "has_repair", "has_bill_of_sale", "has_mortgage",
-    "is_vip", "is_featured", "sold_by_owner",
-    "is_ground_floor", "is_top_floor",
-]
 
 def fit_preprocessor(train: pd.DataFrame) -> dict:
     counts = train["location"].value_counts()
@@ -355,7 +363,6 @@ def fit_preprocessor(train: pd.DataFrame) -> dict:
     return rules
 
 
-# --- 3. BUILD FEATURES ---
 def build_features(df: pd.DataFrame, rules: dict, scale: bool = True) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
 
@@ -404,14 +411,6 @@ def build_features(df: pd.DataFrame, rules: dict, scale: bool = True) -> pd.Data
     return out.astype(float)
 
 
-# --- 4. SAVE ---
-READABLE_COLUMNS = [
-    "item_id", "price", "log_price", "area_m2", "rooms", "floor",
-    "n_floors", "land_m2", "lat", "lng", "category", "location", "scraped",
-    "has_repair", "has_bill_of_sale", "has_mortgage",
-    "is_vip", "is_featured", "sold_by_owner",
-]
-
 def save(parts: dict[str, pd.DataFrame], rules: dict, report: dict,
          output_dir: str | Path) -> None:
     out = Path(output_dir)
@@ -436,13 +435,11 @@ def save(parts: dict[str, pd.DataFrame], rules: dict, report: dict,
 
     print(f"  [9] wrote arrays, tables and preprocessing_report.json to {out}/")
 
-# Build Targets:
 def build_targets(df: pd.DataFrame, rules: dict) -> tuple[np.ndarray, np.ndarray]:
     y_log = np.log(df["price"].to_numpy(dtype=float)) # Task A
     tier = (df["price"] >= rules["tier_threshold_AZN"]).to_numpy().astype(int) # Task B
     return y_log, tier
 
-# Argparse, run and main:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Prepare the bina.az data for modelling.")
     p.add_argument("--input", default="data/bina_az_sale.csv")
