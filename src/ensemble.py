@@ -146,6 +146,40 @@ class BaggedTrees:
                 print(f"    out-of-bag score: {self.oob_score_:.4f}")
         return self
 
+    def _compute_oob(self, X, y, oob_masks) -> float:
+        """Score each training row using only the trees that never saw it.
+
+        This is an honest held-out estimate that costs no extra data: on
+        average each row is out-of-bag for about a third of the trees.
+        """
+        n_rows = len(X)
+        if self.task == "regression":
+            total = np.zeros(n_rows)
+            count = np.zeros(n_rows)
+            for tree, mask in zip(self.estimators_, oob_masks):
+                if mask.any():
+                    total[mask] += tree.predict(X[mask])
+                    count[mask] += 1
+            ok = count > 0
+            if not ok.any():
+                return float("nan")
+            pred = total[ok] / count[ok]
+            ss_res = float(((pred - y[ok]) ** 2).sum())
+            ss_tot = float(((y[ok] - y[ok].mean()) ** 2).sum())
+            return float(1.0 - ss_res / ss_tot)  # OOB R²
+
+        votes = np.zeros((n_rows, len(self.classes_)))
+        count = np.zeros(n_rows)
+        for tree, mask in zip(self.estimators_, oob_masks):
+            if mask.any():
+                votes[mask] += self._aligned_proba(tree, X[mask])
+                count[mask] += 1
+        ok = count > 0
+        if not ok.any():
+            return float("nan")
+        pred = self.classes_[np.argmax(votes[ok], axis=1)]
+        return float((pred == y[ok]).mean())  # OOB accuracy
+
     def predict(self, X):
         """
         Predict a target for every row in X.
