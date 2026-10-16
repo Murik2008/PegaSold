@@ -342,3 +342,147 @@ def section_correlation(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
     ax.grid(False)
     style(ax, "Pearson correlation between numeric columns")
     save(fig, out_dir, "fig10_correlation.png", rep)
+
+# ==========================================================================
+# 6. Numeric features
+# ==========================================================================
+def section_numeric(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+    rep.header("6. NUMERIC FEATURES — ranges, nonsense values, and the link to price")
+    cols = ["area_m2", "rooms", "floor", "building_floors", "land_sot", "views", "lat", "lng"]
+    rep("The raw file hides numbers inside text ('145 m²', '7 / 9'). After")
+    rep("unpacking them:")
+    rep("")
+    rep.table(df[cols].describe(percentiles=[0.01, 0.5, 0.99]).round(2))
+    rep("")
+    rep("Impossible or implausible values that data_prep must handle:")
+    rep(f"  area <= 5 m²:                   {(df['area_m2'] <= 5).sum():,}")
+    rep(f"  area > 1,000 m²:                {(df['area_m2'] > 1_000).sum():,}")
+    rep(f"  floor above building height:    {(df['floor'] > df['building_floors']).sum():,}")
+    rep(f"  rooms > 10:                     {(df['rooms'] > 10).sum():,}")
+    outside = (
+        ~df["lat"].between(*AZ_LAT) | ~df["lng"].between(*AZ_LNG)
+    ) & df["lat"].notna()
+    rep(f"  coordinates outside Azerbaijan: {outside.sum():,}")
+    rep("")
+    rep("`views` is how many people opened the advert. It is recorded AFTER the")
+    rep("advert goes live, so it is not something you know about a flat you are")
+    rep("about to price. Treat it as unusable for an honest model.")
+
+    # 6a. area vs price
+    both = df[(df["area_m2"].between(10, 1000)) & (df[TARGET].between(5_000, 5_000_000))]
+    sample = both.sample(min(12_000, len(both)), random_state=0)
+    fig, ax = plt.subplots(figsize=(6.2, 4.4))
+    ax.scatter(sample["area_m2"], sample[TARGET], s=5, alpha=0.18,
+               color=BLUE, edgecolors="none")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:,.0f}")
+    ax.xaxis.set_major_formatter(lambda v, _: f"{v:,.0f}")
+    r = np.corrcoef(np.log(sample["area_m2"]), np.log(sample[TARGET]))[0, 1]
+    style(ax, f"Bigger flats cost more (correlation of the logs r = {r:.2f})",
+          "area, m² (log scale)", "price, AZN (log scale)")
+    save(fig, out_dir, "fig04_area_vs_price.png", rep)
+    rep("")
+    rep(f"Correlation between log(area) and log(price) = {r:.2f}. Strong and")
+    rep("close to a straight line on log axes, which is the clearest single")
+    rep("argument for modelling log(price) rather than price.")
+
+    # 6b. rooms
+    subset = df[(df["rooms"].between(1, 7)) & (df[TARGET].between(5_000, 3_000_000))]
+    groups = [subset.loc[subset["rooms"] == k, TARGET].to_numpy() for k in range(1, 8)]
+    fig, ax = plt.subplots(figsize=(6.2, 3.8))
+    bp = ax.boxplot(groups, tick_labels=[str(k) for k in range(1, 8)],
+                    patch_artist=True, showfliers=False, widths=0.6)
+    for patch in bp["boxes"]:
+        patch.set(facecolor=SEQ_BLUE[2], edgecolor=SEQ_BLUE[5], linewidth=1.2)
+    for part in ("whiskers", "caps"):
+        for line in bp[part]:
+            line.set_color(SEQ_BLUE[5])
+    for line in bp["medians"]:
+        line.set(color=ORANGE, linewidth=2)
+    ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:,.0f}")
+    ax.xaxis.grid(False)
+    style(ax, "Price rises steadily with room count (orange line = median)",
+          "number of rooms", "price, AZN (log scale)")
+    save(fig, out_dir, "fig05_rooms_vs_price.png", rep)
+
+    # 6c. floor
+    sub = df[(df["floor"].between(1, 20)) & (df[TARGET].between(5_000, 3_000_000))]
+    by_floor = sub.groupby("floor")[TARGET].median()
+    fig, ax = plt.subplots(figsize=(6.2, 3.6))
+    ax.plot(by_floor.index, by_floor.to_numpy(), color=BLUE, lw=2, marker="o", ms=5)
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v / 1000:,.0f}k")
+    style(ax, "Which floor a flat is on barely moves the median price",
+          "floor the flat is on", "median price, AZN")
+    save(fig, out_dir, "fig06_floor_vs_price.png", rep)
+    rep("")
+    rep("Median price by floor is nearly flat — floor is a weak feature on its")
+    rep("own. Ground floor and top floor are the only ones that stand out.")
+
+# ==========================================================================
+# 7. Categorical features
+# ==========================================================================
+def section_categorical(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+    rep.header("7. CATEGORICAL FEATURES — how many groups, and do they separate price?")
+    rep("For a feature to be useful, its groups must have different prices.")
+    rep("We judge that with the median price per group (the median ignores the")
+    rep("few huge outliers that would wreck a mean).")
+    for col in ["Kateqoriya", "Təmir", "Çıxarış", "İpoteka", "owner_title", "products_label", "city"]:
+        rep("")
+        rep(f"--- {col} ---")
+        table = pd.DataFrame({
+            "rows": df[col].value_counts(dropna=False),
+            "median_price": df.groupby(col, dropna=False)[TARGET].median().round(0),
+        })
+        rep.table(table)
+
+    rep("")
+    rep(f"`location` holds {df['location'].nunique()} different district/metro")
+    rep("names. One-hot encoding all of them would add that many columns, most")
+    rep("of them almost always zero. data_prep should keep the frequent ones and")
+    rep("fold the rest into a single 'other' bucket.")
+    rep("")
+    rep("REDUNDANCY CHECK — some pairs of columns say the same thing twice:")
+    for flag, cat, yes in [("repair", "Təmir", "var"),
+                           ("bill_of_sale", "Çıxarış", "var"),
+                           ("mortgage", "İpoteka", "var")]:
+        agree = (df[flag].notna() == (df[cat] == yes)).mean() * 100
+        rep(f"  {flag:<13} notna  vs  {cat} == '{yes}'   agree on {agree:.1f}% of rows")
+    rep("  -> keep one of each pair, drop the other.")
+
+    # 7a. category counts and prices, side by side
+    cats = df["Kateqoriya"].value_counts()
+    med = df.groupby("Kateqoriya")[TARGET].median().reindex(cats.index)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 3.8))
+    axes[0].barh(cats.index[::-1], cats.to_numpy()[::-1], color=BLUE, height=0.7)
+    for name, value in zip(cats.index[::-1], cats.to_numpy()[::-1]):
+        axes[0].text(value * 1.02, name, f"{value:,}", va="center", color=INK_SOFT, fontsize=8)
+    axes[0].set_xlim(0, cats.max() * 1.18)
+    axes[0].yaxis.grid(False)
+    style(axes[0], "How many adverts per property type", "number of adverts")
+
+    axes[1].barh(med.index[::-1], med.to_numpy()[::-1], color=ORANGE, height=0.7)
+    for name, value in zip(med.index[::-1], med.to_numpy()[::-1]):
+        axes[1].text(value * 1.02, name, money(value), va="center", color=INK_SOFT, fontsize=8)
+    axes[1].set_xlim(0, med.max() * 1.25)
+    axes[1].yaxis.grid(False)
+    axes[1].xaxis.set_major_formatter(lambda v, _: f"{v / 1000:,.0f}k")
+    style(axes[1], "Median price per property type", "median price, AZN")
+    save(fig, out_dir, "fig07_property_type.png", rep)
+
+    # 7b. top locations
+    frequent = df["location"].value_counts().head(20).index
+    loc = (df[df["location"].isin(frequent)]
+           .groupby("location")[TARGET].median().sort_values())
+    fig, ax = plt.subplots(figsize=(7, 5.4))
+    ax.barh(loc.index, loc.to_numpy(), color=BLUE, height=0.72)
+    ax.xaxis.set_major_formatter(lambda v, _: f"{v / 1000:,.0f}k")
+    ax.yaxis.grid(False)
+    style(ax, "Median price across the 20 most common locations",
+          "median price, AZN")
+    save(fig, out_dir, "fig08_location_vs_price.png", rep)
+    rep("")
+    rep(f"Across those 20 locations the median price runs from "
+        f"{money(loc.min())} to {money(loc.max())} AZN — a "
+        f"{loc.max() / loc.min():.1f}x spread. Location is a strong feature.")
