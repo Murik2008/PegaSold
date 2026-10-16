@@ -8,9 +8,10 @@ from sklearn.linear_model import Ridge
 from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
-
+from ensemble import BaggedTrees
 from decision_tree import DecisionTree
 from svm import PegasosSVM
+
 
 RANDOM_SEED = 42
 
