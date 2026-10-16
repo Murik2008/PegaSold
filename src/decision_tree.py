@@ -388,3 +388,24 @@ class DecisionTree:
                 + len(y_right) / total * self._impurity(y_right)
         )
         return parent_impurity - child_impurity
+
+    def predict_proba(self, X):
+        """Return class frequencies in each reached leaf."""
+        if self.task != "classification":
+            raise ValueError("predict_proba is available only for classification")
+        if self.root is None:
+            raise ValueError("fit must be called before predict_proba")
+        X = np.asarray(X)
+        if X.ndim != 2 or X.shape[1] != self.n_features_in_:
+            raise ValueError("X must be 2D with the fitted feature count")
+        if not np.issubdtype(X.dtype, np.number) or not np.isfinite(X).all():
+            raise ValueError("X must contain finite numeric values")
+        return np.vstack([self._predict_proba_one(row, self.root) for row in X])
+
+    def _predict_proba_one(self, row, node):
+        while node.feature_index is not None:
+            node = node.left if row[node.feature_index] <= node.threshold else node.right
+        counts = node.class_counts
+        return np.asarray([counts.get(label, 0) for label in self.classes_], dtype=float) / sum(counts.values())
+
+
