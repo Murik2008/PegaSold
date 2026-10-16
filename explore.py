@@ -57,6 +57,7 @@ PRESENCE_FLAGS = ["vip", "featured", "repair", "bill_of_sale", "mortgage"]
 # Azerbaijan's real bounding box, used to spot impossible coordinates.
 AZ_LAT, AZ_LNG = (38.3, 41.95), (44.7, 50.6)
 
+DIVERGING = ["#2a78d6", "#f0efec", "#e34948"]  # negative -> neutral -> positive
 
 
 class Report:
@@ -242,3 +243,102 @@ def build_exploration_frame(df: pd.DataFrame) -> pd.DataFrame:
     # need it to tell the copies of one advert apart.
     out["scraped"] = pd.to_datetime(out["day_x"], format="%d.%m.%Y", errors="coerce")
     return out
+
+def section_overview(df: pd.DataFrame, rep: Report) -> None:
+    rep.header("1. OVERVIEW — how big is the data and what are the columns?")
+    rep(f"Rows:    {len(df):,}")
+    rep(f"Columns: {df.shape[1]}")
+    rep(f"Memory:  {df.memory_usage(deep=True).sum() / 1e6:,.0f} MB in RAM")
+    rep("")
+    rep("Every column, its type, how much is missing, and how many distinct")
+    rep("values it holds. A column with 1 distinct value carries no information;")
+    rep("a column with ~1 distinct value per row is an identifier.")
+    rep("")
+    summary = pd.DataFrame({
+        "dtype": df.dtypes.astype(str),
+        "missing_%": (df.isna().mean() * 100).round(1),
+        "n_unique": df.nunique(),
+        "example": [df[c].dropna().astype(str).head(1).tolist()[:1] for c in df.columns],
+    })
+    summary["example"] = summary["example"].apply(
+        lambda v: (v[0][:45] + "…") if v and len(v[0]) > 45 else (v[0] if v else "")
+    )
+    rep.table(summary)
+
+    constant = summary.index[summary["n_unique"] <= 1].tolist()
+    identifier = summary.index[summary["n_unique"] >= 0.98 * len(df)].tolist()
+    rep("")
+    rep(f"Constant columns (one value only, useless as features): {constant}")
+    rep(f"Identifier-like columns (nearly unique per row):        {identifier}")
+
+def section_geography(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+    rep.header("8. GEOGRAPHY — do the coordinates make sense, and do they matter?")
+    inside = df["lat"].between(*AZ_LAT) & df["lng"].between(*AZ_LNG)
+    rep(f"Coordinates inside Azerbaijan: {inside.sum():,} ({inside.mean() * 100:.2f}%)")
+    rep(f"Coordinates outside:           {(~inside).sum():,}")
+    rep("  A listing in Baku cannot sit at longitude 12°. Those rows have a")
+    rep("  broken coordinate; the rest of the row may still be fine, so")
+    rep("  data_prep should blank the coordinate rather than delete the row.")
+
+    sub = df[inside & df[TARGET].between(20_000, 2_000_000)]
+    sub = sub[sub["lat"].between(40.3, 40.5) & sub["lng"].between(49.7, 50.0)]  # Baku
+    # Plotting 20,000 overlapping dots hides the pattern: later dots cover
+    # earlier ones. Instead we chop the city into small hexagons and colour
+    # each one by the MEDIAN price of the adverts inside it. Hexagons holding
+    # fewer than 10 adverts are left blank, since their median is unreliable.
+    ramp = matplotlib.colors.LinearSegmentedColormap.from_list("seq_blue", SEQ_BLUE)
+    fig, ax = plt.subplots(figsize=(7, 5.2))
+    hexes = ax.hexbin(
+        sub["lng"], sub["lat"], C=sub[TARGET],
+        reduce_C_function=np.median, mincnt=10, gridsize=55,
+        cmap=ramp, norm=matplotlib.colors.LogNorm(vmin=60_000, vmax=900_000),
+        linewidths=0.2, edgecolors="white",
+    )
+    bar = fig.colorbar(hexes, ax=ax, shrink=0.85)
+    bar.set_label("median price in the hexagon, AZN", color=INK_SOFT)
+    bar.set_ticks([60_000, 100_000, 200_000, 400_000, 900_000])
+    bar.ax.yaxis.set_major_formatter(lambda v, _: compact(v))
+    bar.ax.minorticks_off()
+    bar.outline.set_visible(False)
+    ax.grid(False)
+    style(ax, "Median advert price across Baku", "longitude", "latitude")
+    save(fig, out_dir, "fig09_map_of_baku.png", rep)
+    rep("")
+    rep("The map shows a clear, smooth price gradient: dark hexagons (expensive)")
+    rep("sit in the city centre by the bay and fade outwards in every direction.")
+    rep("Latitude and longitude therefore carry real signal — but")
+    rep("as a pair, not individually, which a decision tree handles well")
+    rep("(it can cut on both) and a linear SVM handles poorly.")
+
+def section_correlation(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+    rep.header("9. CORRELATION — which numeric columns move together?")
+    rep("Pearson correlation measures straight-line agreement between two")
+    rep("columns: +1 move together, 0 unrelated, -1 move oppositely. We use")
+    rep("log(price) and log(area) because both are heavily skewed.")
+    work = df[df[TARGET] > 0].copy()
+    work["log_price"] = np.log(work[TARGET])
+    work["log_area"] = np.log(work["area_m2"].where(work["area_m2"] > 0))
+    cols = ["log_price", "log_area", "rooms", "floor", "building_floors", "lat", "lng", "views"]
+    corr = work[cols].corr(numeric_only=True)
+    rep("")
+    rep.table(corr.round(2))
+    rep("")
+    rep("Reading it: area and rooms both track price strongly, and they track")
+    rep("each other strongly too — they partly repeat the same information.")
+    rep("`views` is near zero, another reason to leave it out.")
+
+    fig, ax = plt.subplots(figsize=(6.2, 5))
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list("div", DIVERGING[::-1])
+    im = ax.imshow(corr.to_numpy(), cmap=cmap, vmin=-1, vmax=1)
+    ax.set_xticks(range(len(cols)), cols, rotation=45, ha="right")
+    ax.set_yticks(range(len(cols)), cols)
+    for i in range(len(cols)):
+        for j in range(len(cols)):
+            v = corr.to_numpy()[i, j]
+            ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=8,
+                    color="white" if abs(v) > 0.55 else INK)
+    bar = fig.colorbar(im, ax=ax, shrink=0.8)
+    bar.outline.set_visible(False)
+    ax.grid(False)
+    style(ax, "Pearson correlation between numeric columns")
+    save(fig, out_dir, "fig10_correlation.png", rep)
