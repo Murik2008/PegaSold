@@ -4,11 +4,19 @@ Loads model-ready arrays, cleaned split tables, feature names and the
 preprocessing report, checks every invariant, prints PASS/FAIL, writes
 cleanliness plots (val_*.png) + validation_report.md next to the EDA report."""
 
+import argparse
 import hashlib
 import json
+import shutil
+import subprocess
+import sys
+import tempfile
 
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
@@ -82,7 +90,7 @@ class Validator:
         print(title)
         print("-" * len(title))
 
-    def check(self, name: str, ok: bool, detail: str) -> None:
+    def check(self, name: str, ok: bool, detail: str = "") -> None:
         mark = "PASS" if ok else "FAIL"
         if ok:
             self.passed += 1
@@ -147,7 +155,7 @@ def validate(report, feature_names, arrays, tiers, tables) -> Validator:
             f"{actual:.3f}",
         )
 
-    ids = {k: tables[k]["term_id"] for k in splits}
+    ids = {k: tables[k]["item_id"] for k in splits}
     for k in splits:
         v.check(
             f"no duplicate item_id in '{k}'",
@@ -165,10 +173,11 @@ def validate(report, feature_names, arrays, tiers, tables) -> Validator:
     if "split_item_id_sha256" in report:
         for k in splits:
             expected = report["split_item_id_sha256"][k]
+            actual_hash = sha256_ids(ids[k])
             v.check(
                 f"'{k}' id fingerprint matches report",
-                actual == expected,
-                actual,
+                actual_hash == expected,
+                f"{actual_hash} vs {expected}",
             )
     else:
         v.check("report contains split id fingerprints", False, "missing key")

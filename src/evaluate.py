@@ -1,3 +1,6 @@
+import argparse
+import json
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -8,9 +11,9 @@ from sklearn.linear_model import Ridge
 from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
-from ensemble import BaggedTrees
-from decision_tree import DecisionTree
-from svm import PegasosSVM
+from src.ensemble import BaggedTrees
+from src.decision_tree import DecisionTree
+from src.svm import PegasosSVM
 
 
 RANDOM_SEED = 42
@@ -44,6 +47,11 @@ LAMBDA_GRID = [0.0001, 0.001, 0.01, 0.1]
 # `predict_proba` is what makes ROC-AUC meaningful (pure leaves score 0/1 and
 # rank badly). Matched into the sklearn baseline so the comparison is fair.
 MIN_SAMPLES_LEAF = 5
+
+# Depth selection runs on a seeded subsample because our DecisionTree is exact
+# but slow; only the chosen depth is refit on the full training set.
+TUNE_SUBSAMPLE = 6000
+SVM_EPOCHS = 30
 
 
 # -----------------------------------------------------------------------------
