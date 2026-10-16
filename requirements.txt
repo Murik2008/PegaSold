@@ -1,6 +1,15 @@
-# Pin your exact versions (run `pip freeze` once your env works).
-# These are sensible starting points — adjust as needed, then PIN them.
+# Exact versions, so a clean environment reproduces the numbers in the report.
+
 numpy==2.5.3
 pandas==3.0.6
 matplotlib==3.11.2
-scikit-learn==1.9.1  # baselines / optional bonuses ONLY — not for your models
+
+# Baselines and correctness checks ONLY — never for our own models.
+scikit-learn==1.9.1
+# Pulled in by scikit-learn. Pinned because they sit under its solvers and
+# could shift the baseline numbers between environments.
+scipy==1.18.1
+joblib==1.6.0
+
+# Tests (pytest tests/ -v). Not needed to run the pipeline itself.
+pytest==9.1.1
