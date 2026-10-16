@@ -649,6 +649,108 @@ def render_markdown(m: dict) -> str:
         f"{m['dummy_classification_valid']['acc']:.4f} |\n"
     )
 
+def load_data(processed_dir: str | Path) -> dict:
+    """Load the arrays written by src.data_prep."""
+    d = Path(processed_dir)
+    missing = [
+        f for f in ("X_train.npy", "y_train_log.npy", "tier_train.npy")
+        if not (d / f).exists()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            f"{d} is missing {missing}. Run `python -m src.data_prep` first, "
+            f"or just `python -m src.run_all`."
+        )
+    data = {}
+    for split in ("train", "valid", "test"):
+        data[f"X_{split}"] = np.load(d / f"X_{split}.npy")
+        data[f"y_{split}"] = np.load(d / f"y_{split}_log.npy")
+        data[f"tier_{split}"] = np.load(d / f"tier_{split}.npy")
+    return data
+
+
+def subsample(n: int, k: int, seed: int = RANDOM_SEED) -> np.ndarray:
+    """A fixed, seeded index subset; returns everything when k >= n."""
+    if k >= n:
+        return np.arange(n)
+    return np.random.default_rng(seed).choice(n, k, replace=False)
+
+
+def sweep_depth(data: dict, task: str, depths: list[int], n_tune: int) -> dict:
+    """Fit our tree at each depth on a subsample; score on full validation.
+
+    Training is subsampled because our tree is slow; validation is not, so the
+    selected depth is chosen against the same validation set the final numbers
+    are reported on.
+    """
+    X, y = data["X_train"], data[("y_train" if task == "regression" else "tier_train")]
+    idx = subsample(len(X), n_tune)
+    Xs, ys = X[idx], y[idx]
+    X_va = data["X_valid"]
+    y_va = data["y_valid" if task == "regression" else "tier_valid"]
+
+    train_scores, val_scores = [], []
+    print(f"  depth sweep ({task}) on {len(idx):,} rows:", flush=True)
+    for d in depths:
+        t0 = time.time()
+        m = DecisionTree(task=task, max_depth=d,
+                         min_samples_leaf=MIN_SAMPLES_LEAF).fit(Xs, ys)
+        if task == "regression":
+            tr = regression_metrics(ys, m.predict(Xs))["rmse"]
+            va = regression_metrics(y_va, m.predict(X_va))["rmse"]
+        else:
+            tr = classification_metrics(ys, m.predict(Xs))["acc"]
+            va = classification_metrics(y_va, m.predict(X_va))["acc"]
+        train_scores.append(tr)
+        val_scores.append(va)
+        print(f"    depth {d:3d}: train={tr:.4f} val={va:.4f}  "
+              f"({time.time() - t0:.1f}s)", flush=True)
+
+    best = depths[int(np.argmin(val_scores) if task == "regression"
+                      else np.argmax(val_scores))]
+    print(f"    -> best depth = {best}")
+    return {"depths": depths, "train": train_scores, "val": val_scores, "best": best}
+
+def sweep_lambda(data: dict, lambdas: list[float], epochs: int, n_tune: int) -> dict:
+    """Pick the Pegasos regularisation strength on validation accuracy."""
+    X, t = data["X_train"], data["tier_train"]
+    idx = subsample(len(X), n_tune)
+    accs = []
+    print(f"  lambda sweep on {len(idx):,} rows:", flush=True)
+    for lam in lambdas:
+        m = PegasosSVM(lambda_param=lam, epochs=epochs,
+                       random_state=RANDOM_SEED).fit(X[idx], t[idx])
+        a = classification_metrics(data["tier_valid"], m.predict(data["X_valid"]))["acc"]
+        accs.append(a)
+        print(f"    lambda={lam:<8g} val acc={a:.4f}", flush=True)
+    best = lambdas[int(np.argmax(accs))]
+    print(f"    -> best lambda = {best}")
+    return {"lambdas": lambdas, "val_acc": accs, "best": best}
+
+def _render_ensemble(m: dict) -> str:
+    """The bagging section, including the gain over a single tree."""
+    b_v, b_t = m["our_bagged_regression_valid"], m["our_bagged_regression_test"]
+    bc_v, bc_t = (m["our_bagged_classification_valid"],
+                  m["our_bagged_classification_test"])
+    single = m["our_tree_regression_valid"]["mse"]
+    gain = (1.0 - b_v["mse"] / single) * 100.0
+    return (
+        f"## Bagging — {m['n_estimators']} of our trees, "
+        f"{m['bag_max_samples']:,} bootstrap rows each, depth {m['bag_max_depth']}\n\n"
+        "| task | split | headline |\n"
+        "|---|---|---|\n"
+        f"| A | valid | MSE={b_v['mse']:.5f} RMSE={b_v['rmse']:.4f} "
+        f"R2={b_v['r2']:.4f} ({b_v['typical_error_pct']:.1f}%) |\n"
+        f"| A | test | MSE={b_t['mse']:.5f} RMSE={b_t['rmse']:.4f} "
+        f"R2={b_t['r2']:.4f} |\n"
+        f"| B | valid | acc={bc_v['acc']:.4f} AUC={bc_v['roc_auc']:.4f} |\n"
+        f"| B | test | acc={bc_t['acc']:.4f} AUC={bc_t['roc_auc']:.4f} |\n\n"
+        f"Against one tree: MSE {single:.5f} -> {b_v['mse']:.5f} "
+        f"(**{gain:+.1f}%**). Out-of-bag estimates, which use no validation "
+        f"data at all: R2={m['oob_r2_regression']:.4f} (regression), "
+        f"accuracy={m['oob_acc_classification']:.4f} (classification).\n\n"
+    )
+
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
