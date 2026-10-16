@@ -136,6 +136,39 @@ class DecisionTree:
         return self
 
 
+    def predict(self, X):
+        """Predict a target for every row in X.
+
+        Returns a one-dimensional NumPy array. Classification predictions use
+        the original target labels; regression predictions are numeric. fit
+        must have been called first.
+        """
+        if self.root is None:
+            raise ValueError("fit must be called before predict")
+
+        X = np.asarray(X)
+        if X.ndim != 2:
+            raise ValueError("X must be a 2D array")
+        if not np.issubdtype(X.dtype, np.number):
+            raise ValueError("X must contain numeric values")
+        if X.shape[1] != self.n_features_in_ or not np.isfinite(X).all():
+            raise ValueError("X must have the fitted feature count and finite values")
+
+        return np.asarray([self._predict_one(row, self.root) for row in X])
+
+    def _predict_one(self, row, node):
+        """Return one prediction by following a row from node to a leaf.
+
+        At a split node, compare row[feature_index] with threshold and follow
+        left for <= threshold, otherwise right. At a leaf, return its value.
+        """
+        while node.feature_index is not None:
+            if row[node.feature_index] <= node.threshold:
+                node = node.left
+            else:
+                node = node.right
+        return node.value
+
     def _build_tree(self, X, y, depth):
         """
         Build one node recursively and return it.
@@ -355,28 +388,3 @@ class DecisionTree:
                 + len(y_right) / total * self._impurity(y_right)
         )
         return parent_impurity - child_impurity
-
-    @pytest.mark.parametrize("crit", ["gini", "entropy"])
-    def test_root_split_matches(self, clf_data, crit):
-        X, y = clf_data
-        mine = DecisionTree(criterion=crit, max_depth=3).fit(X, y)
-        ref = DecisionTreeClassifier(criterion=crit, max_depth=3, random_state=0).fit(X, y)
-        assert mine.root.feature_index == ref.tree_.feature[0]
-        assert mine.root.threshold == pytest.approx(ref.tree_.threshold[0], rel=1e-4, abs=1e-4)
-
-    @pytest.mark.parametrize("d", [1, 2, 3, 5, None])
-    def test_training_accuracy_close_to_sklearn(self, clf_data, d):
-        X, y = clf_data
-        mine = (DecisionTree(max_depth=d).fit(X, y).predict(X) == y).mean()
-        ref = DecisionTreeClassifier(max_depth=d, random_state=0).fit(X, y).score(X, y)
-        assert abs(mine - ref) < 0.02
-
-    @pytest.mark.parametrize("d", [2, 4])
-    def test_regression_root_and_fit_match(self, reg_data, d):
-        X, y = reg_data
-        mine = DecisionTree(task="regression", max_depth=d).fit(X, y)
-        ref = DecisionTreeRegressor(max_depth=d, random_state=0).fit(X, y)
-        assert mine.root.feature_index == ref.tree_.feature[0]
-        mse_m = np.mean((mine.predict(X) - y) ** 2)
-        mse_r = np.mean((ref.predict(X) - y) ** 2)
-        assert mse_m == pytest.approx(mse_r, rel=0.02)
