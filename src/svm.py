@@ -82,3 +82,23 @@ class PegasosSVM:
         self.margin_width_ = float(2.0 / norm) if norm > 0 else np.inf
 
         return self
+    def decision_function(self, X):
+        """Signed distance from the separating line, one value per row.
+
+        The sign says which side a listing falls on; the magnitude says how far
+        from the boundary it sits, which is what makes the scores rankable and
+        ROC-AUC meaningful. predict() only needs the sign.
+        """
+        if self.w is None:
+            raise ValueError("fit must be called before prediction")
+        X = np.asarray(X, dtype=float)
+        if X.ndim != 2 or X.shape[1] != self.n_features_in_:
+            raise ValueError("X must be 2D with the fitted feature count")
+        if not np.isfinite(X).all():
+            raise ValueError("X must contain only finite values")
+        return X @ self.w + self.b
+
+    def predict(self, X):
+        """The class label for every row: whichever side of the line it is on."""
+        scores = self.decision_function(X)
+        return self.classes_[(scores >= 0).astype(int)]
