@@ -69,3 +69,70 @@ def test_regression_root_and_fit_match(reg_data, d):
     mse_m = np.mean((mine.predict(X) - y) ** 2)
     mse_r = np.mean((ref.predict(X) - y) ** 2)
     assert mse_m == pytest.approx(mse_r, rel=0.02)
+
+
+# predict_proba and prediction-time input validation
+
+
+@pytest.fixture(scope="module")
+def small_clf():
+    X, y = make_classification(n_samples=300, n_features=8, random_state=0)
+    return DecisionTree(max_depth=5).fit(X, y), X
+
+
+def test_predict_proba_matches_sklearn(clf_data):
+    """Leaf class frequencies should equal sklearn's predict_proba."""
+    X, y = clf_data
+    mine = DecisionTree(max_depth=5).fit(X, y).predict_proba(X)
+    ref = DecisionTreeClassifier(max_depth=5, random_state=0).fit(X, y).predict_proba(X)
+    assert np.abs(mine - ref).mean() < 0.02
+
+
+def test_predict_proba_rows_sum_to_one(small_clf):
+    t, X = small_clf
+    p = t.predict_proba(X)
+    assert p.shape == (len(X), len(t.classes_))
+    np.testing.assert_allclose(p.sum(axis=1), 1.0)
+
+
+def test_predict_proba_argmax_matches_predict(small_clf):
+    t, X = small_clf
+    np.testing.assert_array_equal(t.classes_[t.predict_proba(X).argmax(axis=1)], t.predict(X))
+
+
+def test_impure_leaf_gives_frequencies():
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0, 0, 0, 1])
+    p = DecisionTree(max_depth=0).fit(X, y).predict_proba(X)   # one leaf: 3 vs 1
+    np.testing.assert_allclose(p, [[0.75, 0.25]] * 4)
+
+
+def test_predict_proba_rejects_regression():
+    t = DecisionTree(task="regression").fit(np.random.rand(20, 2), np.random.rand(20))
+    with pytest.raises(ValueError):
+        t.predict_proba(np.zeros((1, 2)))
+
+
+@pytest.mark.parametrize("method", ["predict", "predict_proba"])
+def test_before_fit_raises(method):
+    with pytest.raises(ValueError):
+        getattr(DecisionTree(), method)(np.zeros((1, 2)))
+
+
+@pytest.mark.parametrize("method", ["predict", "predict_proba"])
+@pytest.mark.parametrize("bad", [np.zeros(8), np.zeros((3, 5)),
+                                 np.full((2, 8), np.nan), np.full((2, 8), np.inf),
+                                 np.full((2, 8), "a")])
+def test_bad_input_raises(small_clf, method, bad):
+    """1-D, wrong feature count, non-finite, non-numeric."""
+    t, _ = small_clf
+    with pytest.raises(ValueError):
+        getattr(t, method)(bad)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf])
+def test_fit_rejects_non_finite_X(bad):
+    X = np.array([[0.0, 1.0], [bad, 2.0], [1.0, 1.0], [2.0, 0.0]])
+    with pytest.raises(ValueError):
+        DecisionTree().fit(X, np.array([0, 1, 0, 1]))
+
