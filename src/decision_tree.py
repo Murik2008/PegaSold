@@ -325,3 +325,58 @@ class DecisionTree:
             node.class_counts = dict(zip(values.tolist(), counts.tolist()))
 
         return node
+
+    def _impurity(self, y):
+        """Measure how mixed or spread out the targets y are.
+
+        Use Gini or entropy for classification, according to criterion. Use
+        mean squared error (MSE) for regression. A pure classification node or
+        a regression node with identical targets should have impurity zero.
+        """
+        if self.task == "classification":
+            _, counts = np.unique(y, return_counts=True)
+            probabilities = counts / counts.sum()
+            if self.criterion == "gini":
+                return float(1.0 - np.sum(probabilities ** 2))
+            nonzero = probabilities > 0
+            return float(-np.sum(probabilities[nonzero] * np.log2(probabilities[nonzero])))
+        return float(np.mean((y - np.mean(y)) ** 2))
+
+    def _split_score(self, y_left, y_right, parent_impurity):
+        """Calculate impurity reduction for a proposed split.
+
+        Compute the child impurity as a size-weighted average of the left and
+        right impurities. Return parent_impurity minus that weighted average;
+        larger positive gain means a better split.
+        """
+        total = len(y_left) + len(y_right)
+        child_impurity = (
+                len(y_left) / total * self._impurity(y_left)
+                + len(y_right) / total * self._impurity(y_right)
+        )
+        return parent_impurity - child_impurity
+
+    @pytest.mark.parametrize("crit", ["gini", "entropy"])
+    def test_root_split_matches(self, clf_data, crit):
+        X, y = clf_data
+        mine = DecisionTree(criterion=crit, max_depth=3).fit(X, y)
+        ref = DecisionTreeClassifier(criterion=crit, max_depth=3, random_state=0).fit(X, y)
+        assert mine.root.feature_index == ref.tree_.feature[0]
+        assert mine.root.threshold == pytest.approx(ref.tree_.threshold[0], rel=1e-4, abs=1e-4)
+
+    @pytest.mark.parametrize("d", [1, 2, 3, 5, None])
+    def test_training_accuracy_close_to_sklearn(self, clf_data, d):
+        X, y = clf_data
+        mine = (DecisionTree(max_depth=d).fit(X, y).predict(X) == y).mean()
+        ref = DecisionTreeClassifier(max_depth=d, random_state=0).fit(X, y).score(X, y)
+        assert abs(mine - ref) < 0.02
+
+    @pytest.mark.parametrize("d", [2, 4])
+    def test_regression_root_and_fit_match(self, reg_data, d):
+        X, y = reg_data
+        mine = DecisionTree(task="regression", max_depth=d).fit(X, y)
+        ref = DecisionTreeRegressor(max_depth=d, random_state=0).fit(X, y)
+        assert mine.root.feature_index == ref.tree_.feature[0]
+        mse_m = np.mean((mine.predict(X) - y) ** 2)
+        mse_r = np.mean((ref.predict(X) - y) ** 2)
+        assert mse_m == pytest.approx(mse_r, rel=0.02)
