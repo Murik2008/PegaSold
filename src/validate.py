@@ -14,6 +14,57 @@ import numpy as np
 
 SPLIT_TOLERANCE = 0.02
 
+def leakage_audit(v, report, feature_names, tables):
+    """
+    Check that nothing in the model inputs gives away the price.
+
+    Three checks: no leakage column survives into the feature names, the
+    report records which columns were removed, and no numeric feature is
+    almost a copy of the price (|correlation| above 0.95 on the train table).
+
+    :param v: Validator that records the PASS/FAIL results.
+    :param report: Preprocessing report (leakage columns, numeric feature list).
+    :param feature_names: Names of the processed features.
+    :param tables: Dict of cleaned split tables; the "train" table is used.
+    """
+    v.group("LEAKAGE")
+
+    # 1. No processed feature may be derived from a column that contains the answer
+    leaked = [
+        name
+        for name in feature_names
+        if any(tag in name for tag in ("unit_price", "total_price", "description"))
+    ]
+    v.check("leakage columns absent from feature_names", not leaked, f"{leaked}")
+
+    # 2. The preprocessing step must have recorded exactly these removals
+    v.check(
+        "leakage columns recorded in report",
+        set(report["leakage_columns_removed"]) == {"unit_price", "total_price", "description"},
+        ",".join(sorted(report["leakage_columns_removed"])),
+    )
+
+    # 3. No numeric feature may be (almost) a copy of the price
+    numeric_features = report.get("numeric_features", [])
+    train = tables["train"]
+    price = pd.to_numeric(train["price"], errors="coerce")
+
+    # Strongest correlation seen so far, as (column, |r|)
+    worst = ("", 0.0)
+    for column in numeric_features:
+        # Skip features that are not columns of the cleaned table
+        if column not in train.columns:
+            continue
+        r = abs(train[column].corr(price))
+        # corr() gives NaN for constant columns, so those are ignored
+        if pd.notna(r) and r > worst[1]:
+            worst = (column, float(r))
+    v.check(
+        "no numeric feature |corr| > 0.95 with price",
+        worst[1] <= 0.95,
+        f"max {worst[0]}={worst[1]:.3f}",
+    )
+
 class Validator:
     def __init__(self) -> None:
         self.passed = 0
@@ -117,3 +168,7 @@ def validate(report, feature_names, arrays, tiesr, tables) -> Validator:
             )
     else:
         v.check("report contains split id fingerprints", False, "missing key")
+
+    # ---
+    leakage_audit(v, report, feature_names, tables)
+    # ---
