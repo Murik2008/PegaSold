@@ -25,3 +25,6 @@ results/
 .DS_Store
 .idea/
 .vscode/
+
+# Generated run artifacts
+reports/
