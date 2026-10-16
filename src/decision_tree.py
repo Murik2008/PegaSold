@@ -325,3 +325,28 @@ class DecisionTree:
             node.class_counts = dict(zip(values.tolist(), counts.tolist()))
 
         return node
+    
+    def predict(self, X):
+        """Predict a target for every row in X."""
+        if self.root is None:
+            raise ValueError("fit must be called before predict")
+
+        X = np.asarray(X)
+        if X.ndim != 2:
+            raise ValueError("X must be a 2D array")
+        if not np.issubdtype(X.dtype, np.number):
+            raise ValueError("X must contain numeric values")
+        if X.shape[1] != self.n_features_in_ or not np.isfinite(X).all():
+            raise ValueError("X must have the fitted feature count and finite values")
+
+        return np.asarray([self._predict_one(row, self.root) for row in X])
+
+    def _predict_one(self, row, node):
+        """Return one prediction by following a row from node to a leaf."""
+        while node.feature_index is not None:
+            if row[node.feature_index] <= node.threshold:
+                node = node.left
+            else:
+                node = node.right
+        return node.value
+
