@@ -52,6 +52,15 @@ RESIDENTIAL = APARTMENTS + ["Həyət evi/Bağ evi"]
 SUSPECTED_LEAKAGE = ["total_price", "unit_price"]
 
 # Columns the scraper only ever writes when the answer is "yes".
+# Columns that identify a row or record when it was scraped. They carry no
+# information about how much a flat is worth.
+ID_AND_BOOKKEEPING = [
+    "id_x", "id_y", "estate_id", "estate_details_id_x", "estate_details_id_y",
+    "rel_url", "estate_rel_url_x", "estate_rel_url_y", "estate_rel_url", "img_url",
+    "datetime_scrape_x", "datetime_scrape_y", "day_x", "hour_x", "day_y", "hour_y",
+    "city_when", "updated", "currency_x", "currency_y",
+]
+
 PRESENCE_FLAGS = ["vip", "featured", "repair", "bill_of_sale", "mortgage"]
 
 # Azerbaijan's real bounding box, used to spot impossible coordinates.
@@ -81,206 +90,6 @@ class Report:
 
     def save(self, path: Path) -> None:
         path.write_text("\n".join(self.lines) + "\n", encoding="utf-8")
-
-    # ==========================================================================
-    # 3. Duplicates
-    # ==========================================================================
-    def section_duplicates(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
-        rep.header("3. DUPLICATES — is every row a different flat?")
-        rep(f"Identical rows (all 51 columns equal): {df.duplicated().sum():,}")
-        rep("")
-        rep("But each advert has a stable page address in `estate_rel_url_x`")
-        rep("(e.g. /items/4521724). If the same address appears twice, the same")
-        rep("flat was scraped twice.")
-        listings = df["estate_rel_url_x"].value_counts()
-        rep(f"  rows in file:            {len(df):,}")
-        rep(f"  distinct adverts:        {listings.size:,}")
-        rep(f"  extra (repeat) rows:     {len(df) - listings.size:,}"
-            f"  = {(len(df) - listings.size) / len(df) * 100:.1f}% of the file")
-        rep("")
-        rep("How many times each advert appears:")
-        rep.table(listings.value_counts().sort_index().rename("adverts").to_frame())
-        rep("")
-        rep("Does the price change between the copies of one advert?")
-        spread = df.groupby("estate_rel_url_x")[TARGET].nunique()
-        rep(f"  adverts with a single price across their copies: {(spread == 1).sum():,}")
-        rep(f"  adverts whose price changed:                     {(spread > 1).sum():,}")
-        rep("")
-        rep("WHY THIS MATTERS. If we split the data randomly without removing these,")
-        rep("the same flat can land in both train and test. The model then recalls a")
-        rep("price it has already seen and the test score is a lie.")
-
-        counts = listings.value_counts().sort_index()
-        counts = counts[counts.index <= 6]
-        fig, ax = plt.subplots(figsize=(6, 3.6))
-        ax.bar(counts.index.astype(str), counts.to_numpy(), color=BLUE, width=0.6)
-        for x, y in zip(counts.index.astype(str), counts.to_numpy()):
-            ax.text(x, y, f"{y:,}", ha="center", va="bottom", color=INK_SOFT, fontsize=8)
-        ax.xaxis.grid(False)
-        style(ax, "Most adverts were scraped once, many twice",
-              "times the same advert appears in the file", "number of adverts")
-        save(fig, out_dir, "fig02_duplicate_adverts.png", rep)
-
-    # ==========================================================================
-    # 4. Leakage
-    # ==========================================================================
-    def section_leakage(df: pd.DataFrame, rep: Report) -> None:
-        rep.header("4. LEAKAGE — which columns already contain the answer?")
-        rep("A feature leaks if it could only be known once the price is known.")
-        rep("Training on one makes the score perfect and the model worthless.")
-        rep("")
-
-        same = (df["total_price"] == df[TARGET]).mean() * 100
-        rep(f"`total_price` equals `price` in {same:.2f}% of rows.")
-        rep("  -> it is the target under a second name. DROP.")
-        rep("")
-
-        both = df[["unit_price_azn_m2", "area_m2"]].notna().all(axis=1)
-        reconstructed = df.loc[both, "unit_price_azn_m2"] * df.loc[both, "area_m2"]
-        error = (reconstructed - df.loc[both, TARGET]).abs() / df.loc[both, TARGET]
-        rep(f"`unit_price` is price per m². On the {both.sum():,} rows where both it")
-        rep("and the area are present, unit_price x area reconstructs the price:")
-        rep(f"  within  1% of the true price: {(error < 0.01).mean() * 100:.1f}% of rows")
-        rep(f"  within  5% of the true price: {(error < 0.05).mean() * 100:.1f}% of rows")
-        rep("  -> it is the target divided by a feature we keep. DROP.")
-        rep("")
-        rep("`description` is free text written by the seller and very often states")
-        rep("the price in words. Treat as leakage unless the price is stripped out:")
-        sample = df["description"].dropna().head(4000).astype(str)
-        mentions = sample.str.contains(r"\b(?:qiymət|azn|man\.?)\b", case=False, regex=True).mean()
-        rep(f"  {mentions * 100:.0f}% of a 4,000-row sample mention a price word.")
-        rep("")
-        rep("VERDICT — drop before training: total_price, unit_price, description.")
-
-    # ==========================================================================
-    # 10. Task B preview
-    # ==========================================================================
-    def section_tiers(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
-        rep.header("10. TASK B PREVIEW — the premium / standard split")
-        threshold = df[TARGET].median()
-        premium = df[TARGET] > threshold
-        rep("Task B asks for a price tier made by splitting at the median.")
-        rep(f"On the whole file the median is {money(threshold)} AZN, which gives:")
-        rep(f"  standard (<= median): {(~premium).sum():,}  ({(~premium).mean() * 100:.1f}%)")
-        rep(f"  premium  (>  median): {premium.sum():,}  ({premium.mean() * 100:.1f}%)")
-        rep("")
-        rep("The split is balanced by construction, so accuracy is a fair metric")
-        rep("here and a coin flip scores 50%. IMPORTANT: the brief says the median")
-        rep("must be computed on the TRAINING SET ONLY. Using the median of the")
-        rep("whole file would let test-set prices decide the class boundary, which")
-        rep("is leakage.")
-        rep("")
-        rep("Share of premium adverts inside each property type:")
-        share = (df.assign(premium=premium)
-                 .groupby("Kateqoriya")["premium"].agg(["mean", "size"])
-                 .sort_values("mean", ascending=False))
-        share.columns = ["premium_share", "rows"]
-        rep.table(share.assign(premium_share=lambda t: (t["premium_share"] * 100).round(1)))
-
-        fig, ax = plt.subplots(figsize=(6.4, 3.6))
-        order = share.index
-        vals = share["premium_share"].to_numpy() * 100
-        ax.barh(order[::-1], vals[::-1], color=BLUE, height=0.7)
-        ax.axvline(50, color=ORANGE, lw=1.5, ls="--")
-        ax.text(51, -0.45, "50% = balanced", color=ORANGE, fontsize=8)
-        for name, value in zip(order[::-1], vals[::-1]):
-            ax.text(value + 1.5, name, f"{value:.0f}%", va="center", color=INK_SOFT, fontsize=8)
-        ax.set_xlim(0, 108)
-        ax.yaxis.grid(False)
-        style(ax, "Share of 'premium' adverts within each property type",
-              "% of the type priced above the overall median")
-        save(fig, out_dir, "fig11_price_tiers.png", rep)
-
-        # ==========================================================================
-        # 14. Conclusions
-        # ==========================================================================
-        def section_conclusions(df: pd.DataFrame, rep: Report) -> None:
-            rep.header("14. CONCLUSIONS — what data_prep.py has to do")
-            rep("DROP — no information:")
-            rep(f"  identifiers and scrape bookkeeping ({len(ID_AND_BOOKKEEPING)} columns): "
-                f"{', '.join(ID_AND_BOOKKEEPING)}")
-            rep("  constant columns: currency_x, currency_y, shop_title, (Binanın növü: 99.8% empty)")
-            rep("")
-            rep("DROP — leakage:")
-            rep("  total_price (identical to price), unit_price (price per m²), description")
-            rep("")
-            rep("DROP — not knowable before the sale:")
-            rep("  views")
-            rep("")
-            rep("DEDUPLICATE:")
-            rep("  one row per estate_rel_url_x, BEFORE splitting into train/test")
-            rep("")
-            rep("DECIDE A SCOPE:")
-            rep("  city is 99.7% Baku, and 'Torpaq' (bare land) / 'Obyekt' / 'Qaraj' are")
-            rep("  priced on different logic than flats. Narrowing the scope makes the")
-            rep("  task coherent; whatever we choose must be stated in the report.")
-            rep("")
-            rep("PARSE OUT OF TEXT:")
-            rep("  Sahə -> area_m2,  Mərtəbə -> floor + building_floors,")
-            rep("  Torpaq sahəsi -> land_sot")
-            rep("")
-            rep("FILL FLAGS WITH 0/1, NOT MEANS:")
-            rep(f"  {', '.join(PRESENCE_FLAGS)}")
-            rep("")
-            rep("CUT IMPOSSIBLE VALUES (and count every row removed):")
-            rep("  price outside a sane window, area <= 5 or > 1000 m²,")
-            rep("  floor above building height, coordinates outside Azerbaijan")
-            rep("")
-            rep("ENCODE:")
-            rep("  Kateqoriya and the frequent `location` values as one-hot, with a")
-            rep("  shared 'other' bucket; yes/no columns as 0/1")
-            rep("")
-            rep("TARGET:")
-            rep("  Task A on log(price);  Task B on a median split of the TRAINING set")
-            rep("")
-            rep("SCALING:")
-            rep("  the SVM needs standardised features (area is in hundreds, flags are")
-            rep("  0/1). Fit the scaler on train only, then apply it to valid/test.")
-            rep("  The decision tree does not care about scale.")
-
-    def parse_args() -> argparse.Namespace:
-        p = argparse.ArgumentParser(description="Read-only exploration of the bina.az dataset.")
-        p.add_argument("--data", default="data/bina_az_sale.csv", help="path to the raw CSV")
-        p.add_argument("--out", default="reports/eda", help="where the report and figures go")
-        return p.parse_args()
-
-    def main() -> int:
-        args = parse_args()
-        out_dir = Path(args.out)
-        fig_dir = out_dir / "figures"
-        fig_dir.mkdir(parents=True, exist_ok=True)
-
-        rep = Report()
-        rep("bina.az sale — exploratory data analysis")
-        rep(f"source file: {args.data}")
-        rep("this script reads the data only; it writes nothing into data/")
-
-        raw = pd.read_csv(args.data)
-        df = build_exploration_frame(raw)
-
-        section_overview(raw, rep)
-        section_missing(raw, fig_dir, rep)
-        section_duplicates(raw, fig_dir, rep)
-        section_leakage(df, rep)
-        section_target(df, fig_dir, rep)
-        section_numeric(df, fig_dir, rep)
-        section_categorical(df, fig_dir, rep)
-        section_geography(df, fig_dir, rep)
-        section_correlation(df, fig_dir, rep)
-        section_tiers(df, fig_dir, rep)
-        section_scope(df, fig_dir, rep)
-        section_dedup(df, fig_dir, rep)
-        section_window(df, fig_dir, rep)
-        section_conclusions(df, rep)
-
-        rep.save(out_dir / "eda_report.txt")
-        print(f"\nReport written to {out_dir / 'eda_report.txt'}")
-        print(f"Figures written to {fig_dir}")
-        return 0
-
-    if __name__ == "__main__":
-        raise SystemExit(main())
-
 
 def save(fig: plt.Figure, out_dir: Path, name: str, rep: Report) -> None:
     path = out_dir / name
@@ -685,3 +494,533 @@ def section_categorical(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
     rep(f"Across those 20 locations the median price runs from "
         f"{money(loc.min())} to {money(loc.max())} AZN — a "
         f"{loc.max() / loc.min():.1f}x spread. Location is a strong feature.")
+
+
+def section_duplicates(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+        rep.header("3. DUPLICATES — is every row a different flat?")
+        rep(f"Identical rows (all 51 columns equal): {df.duplicated().sum():,}")
+        rep("")
+        rep("But each advert has a stable page address in `estate_rel_url_x`")
+        rep("(e.g. /items/4521724). If the same address appears twice, the same")
+        rep("flat was scraped twice.")
+        listings = df["estate_rel_url_x"].value_counts()
+        rep(f"  rows in file:            {len(df):,}")
+        rep(f"  distinct adverts:        {listings.size:,}")
+        rep(f"  extra (repeat) rows:     {len(df) - listings.size:,}"
+            f"  = {(len(df) - listings.size) / len(df) * 100:.1f}% of the file")
+        rep("")
+        rep("How many times each advert appears:")
+        rep.table(listings.value_counts().sort_index().rename("adverts").to_frame())
+        rep("")
+        rep("Does the price change between the copies of one advert?")
+        spread = df.groupby("estate_rel_url_x")[TARGET].nunique()
+        rep(f"  adverts with a single price across their copies: {(spread == 1).sum():,}")
+        rep(f"  adverts whose price changed:                     {(spread > 1).sum():,}")
+        rep("")
+        rep("WHY THIS MATTERS. If we split the data randomly without removing these,")
+        rep("the same flat can land in both train and test. The model then recalls a")
+        rep("price it has already seen and the test score is a lie.")
+
+        counts = listings.value_counts().sort_index()
+        counts = counts[counts.index <= 6]
+        fig, ax = plt.subplots(figsize=(6, 3.6))
+        ax.bar(counts.index.astype(str), counts.to_numpy(), color=BLUE, width=0.6)
+        for x, y in zip(counts.index.astype(str), counts.to_numpy()):
+            ax.text(x, y, f"{y:,}", ha="center", va="bottom", color=INK_SOFT, fontsize=8)
+        ax.xaxis.grid(False)
+        style(ax, "Most adverts were scraped once, many twice",
+              "times the same advert appears in the file", "number of adverts")
+        save(fig, out_dir, "fig02_duplicate_adverts.png", rep)
+
+
+def section_leakage(df: pd.DataFrame, rep: Report) -> None:
+        rep.header("4. LEAKAGE — which columns already contain the answer?")
+        rep("A feature leaks if it could only be known once the price is known.")
+        rep("Training on one makes the score perfect and the model worthless.")
+        rep("")
+
+        same = (df["total_price"] == df[TARGET]).mean() * 100
+        rep(f"`total_price` equals `price` in {same:.2f}% of rows.")
+        rep("  -> it is the target under a second name. DROP.")
+        rep("")
+
+        both = df[["unit_price_azn_m2", "area_m2"]].notna().all(axis=1)
+        reconstructed = df.loc[both, "unit_price_azn_m2"] * df.loc[both, "area_m2"]
+        error = (reconstructed - df.loc[both, TARGET]).abs() / df.loc[both, TARGET]
+        rep(f"`unit_price` is price per m². On the {both.sum():,} rows where both it")
+        rep("and the area are present, unit_price x area reconstructs the price:")
+        rep(f"  within  1% of the true price: {(error < 0.01).mean() * 100:.1f}% of rows")
+        rep(f"  within  5% of the true price: {(error < 0.05).mean() * 100:.1f}% of rows")
+        rep("  -> it is the target divided by a feature we keep. DROP.")
+        rep("")
+        rep("`description` is free text written by the seller and very often states")
+        rep("the price in words. Treat as leakage unless the price is stripped out:")
+        sample = df["description"].dropna().head(4000).astype(str)
+        mentions = sample.str.contains(r"\b(?:qiymət|azn|man\.?)\b", case=False, regex=True).mean()
+        rep(f"  {mentions * 100:.0f}% of a 4,000-row sample mention a price word.")
+        rep("")
+        rep("VERDICT — drop before training: total_price, unit_price, description.")
+
+
+def section_tiers(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+        rep.header("10. TASK B PREVIEW — the premium / standard split")
+        threshold = df[TARGET].median()
+        premium = df[TARGET] > threshold
+        rep("Task B asks for a price tier made by splitting at the median.")
+        rep(f"On the whole file the median is {money(threshold)} AZN, which gives:")
+        rep(f"  standard (<= median): {(~premium).sum():,}  ({(~premium).mean() * 100:.1f}%)")
+        rep(f"  premium  (>  median): {premium.sum():,}  ({premium.mean() * 100:.1f}%)")
+        rep("")
+        rep("The split is balanced by construction, so accuracy is a fair metric")
+        rep("here and a coin flip scores 50%. IMPORTANT: the brief says the median")
+        rep("must be computed on the TRAINING SET ONLY. Using the median of the")
+        rep("whole file would let test-set prices decide the class boundary, which")
+        rep("is leakage.")
+        rep("")
+        rep("Share of premium adverts inside each property type:")
+        share = (df.assign(premium=premium)
+                 .groupby("Kateqoriya")["premium"].agg(["mean", "size"])
+                 .sort_values("mean", ascending=False))
+        share.columns = ["premium_share", "rows"]
+        rep.table(share.assign(premium_share=lambda t: (t["premium_share"] * 100).round(1)))
+
+        fig, ax = plt.subplots(figsize=(6.4, 3.6))
+        order = share.index
+        vals = share["premium_share"].to_numpy() * 100
+        ax.barh(order[::-1], vals[::-1], color=BLUE, height=0.7)
+        ax.axvline(50, color=ORANGE, lw=1.5, ls="--")
+        ax.text(51, -0.45, "50% = balanced", color=ORANGE, fontsize=8)
+        for name, value in zip(order[::-1], vals[::-1]):
+            ax.text(value + 1.5, name, f"{value:.0f}%", va="center", color=INK_SOFT, fontsize=8)
+        ax.set_xlim(0, 108)
+        ax.yaxis.grid(False)
+        style(ax, "Share of 'premium' adverts within each property type",
+              "% of the type priced above the overall median")
+        save(fig, out_dir, "fig11_price_tiers.png", rep)
+
+        # ==========================================================================
+        # 14. Conclusions
+        # ==========================================================================
+
+
+def section_scope(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+    rep.header("11. SCOPE DECISION — which rows belong in the task at all?")
+    rep("`Kateqoriya` mixes seven kinds of property. The question is whether")
+    rep("they are one prediction problem or several. Three measurements.")
+
+    # ---- 1a. unit inconsistency -------------------------------------------
+    rep("")
+    rep("1a. THE `Sahə` COLUMN DOES NOT USE ONE UNIT.")
+    rep("Reading the text, not just the number:")
+    rep("")
+    units = (df.assign(unit=df["Sahə"].astype("string")
+                       .str.extract(r"([^0-9.,\s]+)", expand=False))
+             .groupby("Kateqoriya")["unit"].agg(lambda s: s.value_counts().index[0]))
+    examples = df.groupby("Kateqoriya")["Sahə"].first()
+    rep.table(pd.DataFrame({"unit": units, "example": examples}))
+    rep("")
+    rep("`Torpaq` (bare land) measures area in SOT, everybody else in m².")
+    rep("1 sot = 100 m². A naive numeric parse puts '12 sot' (1,200 m²) and")
+    rep("'65 m²' in the same column as 12 and 65, so the plot of land looks")
+    rep("five times SMALLER than the flat. This is silent: nothing crashes,")
+    rep("the model simply learns nonsense.")
+
+    # ---- 1b. structurally missing features ---------------------------------
+    rep("")
+    rep("1b. THE CATEGORIES DO NOT SHARE A FEATURE SET.")
+    rep("Percentage of rows where each feature is present:")
+    rep("")
+    presence = pd.DataFrame({
+        "rows": df.groupby("Kateqoriya").size(),
+        "area": df.groupby("Kateqoriya")["Sahə"].apply(lambda s: s.notna().mean() * 100),
+        "rooms": df.groupby("Kateqoriya")["Otaq sayı"].apply(lambda s: s.notna().mean() * 100),
+        "floor": df.groupby("Kateqoriya")["Mərtəbə"].apply(lambda s: s.notna().mean() * 100),
+        "land size": df.groupby("Kateqoriya")["Torpaq sahəsi"].apply(lambda s: s.notna().mean() * 100),
+    }).sort_values("rows", ascending=False)
+    rep.table(presence.round(1))
+    rep("")
+    rep("These are not gaps to impute. A plot of land HAS no floor and HAS no")
+    rep("rooms; the question does not apply. Training one model across all")
+    rep("seven means most of the feature matrix is structurally empty.")
+
+    order = presence.index
+    grid = presence[["area", "rooms", "floor", "land size"]]
+    fig, ax = plt.subplots(figsize=(6.4, 3.8))
+    ramp = matplotlib.colors.LinearSegmentedColormap.from_list("seq_blue", SEQ_BLUE)
+    im = ax.imshow(grid.to_numpy(), cmap=ramp, vmin=0, vmax=100, aspect="auto")
+    ax.set_xticks(range(grid.shape[1]), grid.columns)
+    ax.set_yticks(range(len(order)), [f"{c}  (n={presence.loc[c, 'rows']:,})" for c in order])
+    for i in range(grid.shape[0]):
+        for j in range(grid.shape[1]):
+            v = grid.to_numpy()[i, j]
+            ax.text(j, i, f"{v:.0f}", ha="center", va="center", fontsize=9,
+                    color="white" if v > 55 else INK)
+    ax.grid(False)
+    style(ax, "Which features exist at all, by property type (% of rows present)")
+    save(fig, out_dir, "fig12_feature_availability.png", rep)
+
+    # ---- 1c. is price per m2 even comparable? ------------------------------
+    rep("")
+    rep("1c. PRICE PER m² IS CONSISTENT WITHIN FLATS, WILD ACROSS THE REST.")
+    rep("If a category is one coherent market, its price per m² should sit in")
+    rep("a narrow band. We measure the band as the 90th percentile divided by")
+    rep("the 10th: '1.9' means the dear end is 1.9x the cheap end.")
+    rep("")
+    flats_only = df[df["Kateqoriya"] != "Torpaq"]  # excluded: different unit
+    ppm2 = flats_only[TARGET] / flats_only["area_m2"]
+    band = (ppm2.groupby(flats_only["Kateqoriya"])
+            .quantile([0.1, 0.5, 0.9]).unstack())
+    band["p90 / p10"] = (band[0.9] / band[0.1]).round(1)
+    band.columns = ["p10", "median", "p90", "p90 / p10"]
+    rep.table(band.round(0).sort_values("p90 / p10"))
+    rep("")
+    rep("Flats are the tightest (1.9-2.0x). Houses are looser at 3.8x, because")
+    rep("a house's worth is partly its plot, and plot size varies hugely — but")
+    rep("houses DO record their land size, so that spread is explainable with")
+    rep("the columns we have. `Obyekt` at 8.7x is not: what a commercial unit")
+    rep("earns is nowhere in this file.")
+    rep("")
+    rep("`Torpaq` is excluded from the table because its area is in sot, so a")
+    rep("price per m² would be a hundredfold wrong. Measured in its own unit")
+    land = df[df["Kateqoriya"] == "Torpaq"]
+    per_sot = (land[TARGET] / land["area_m2"]).quantile([0.1, 0.9])
+    rep(f"(AZN per sot) land still spreads {per_sot.iloc[1] / per_sot.iloc[0]:.0f}x "
+        "from its 10th to its 90th percentile — because what a plot is worth")
+    rep("depends on permission to build on it, which is not in this dataset.")
+
+    fig, ax = plt.subplots(figsize=(6.4, 3.4))
+    srt = band.sort_values("p90 / p10")
+    colors = [AQUA if name in RESIDENTIAL else ORANGE for name in srt.index]
+    ax.barh(srt.index, srt["p90 / p10"], color=colors, height=0.7)
+    for name, value in srt["p90 / p10"].items():
+        ax.text(value + 0.1, name, f"{value:.1f}x", va="center", color=INK_SOFT, fontsize=8)
+    ax.set_xlim(0, srt["p90 / p10"].max() * 1.2)
+    ax.yaxis.grid(False)
+    style(ax, "How tightly priced each property type is",
+          "90th percentile price per m²  ÷  10th percentile")
+    ax.legend(handles=[
+        plt.Rectangle((0, 0), 1, 1, color=AQUA, label="kept — residential"),
+        plt.Rectangle((0, 0), 1, 1, color=ORANGE, label="dropped — see 1b"),
+    ], frameon=False, loc="lower right", fontsize=8)
+    save(fig, out_dir, "fig13_price_consistency.png", rep)
+
+    # ---- 1d. what each scope costs us -------------------------------------
+    rep("")
+    rep("1d. WHAT EACH SCOPE COSTS IN ROWS (counted after deduplication).")
+    one = df.drop_duplicates(subset=[ADVERT_ID])
+    rep("")
+    rep.table(one["city"].value_counts().rename("adverts").to_frame())
+    rep("")
+    options = {
+        "everything": pd.Series(True, index=one.index),
+        "Baku only": one["city"].eq("bakı"),
+        "Baku + residential (flats & houses)":
+            one["city"].eq("bakı") & one["Kateqoriya"].isin(RESIDENTIAL),
+        "Baku + apartments only": one["city"].eq("bakı") & one["Kateqoriya"].isin(APARTMENTS),
+    }
+    table = pd.DataFrame({
+        "adverts kept": {k: int(v.sum()) for k, v in options.items()},
+        "% of adverts": {k: round(v.mean() * 100, 1) for k, v in options.items()},
+    })
+    rep.table(table)
+    rep("")
+    rep("RECOMMENDATION. Keep Baku + the three residential types")
+    rep(f"({int(options['Baku + residential (flats & houses)'].sum()):,} adverts, 90% of the file).")
+    rep("  - the 260 non-Baku adverts are a different market measured 260 times;")
+    rep("    too few to learn from, enough to add noise.")
+    rep("  - Torpaq/Obyekt/Ofis/Qaraj (9,208 adverts) have no rooms and no floor,")
+    rep("    and Torpaq's area is in a different unit entirely.")
+    rep("  - the three residential types share one feature set and price per m²")
+    rep("    bands of 1.9-3.8x, so they are one problem.")
+    rep("  - `Kateqoriya` stays as a feature, so the model can still tell a")
+    rep("    house from a new-build flat.")
+
+
+def section_dedup(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+    rep.header("12. DEDUPLICATION DECISION — one row per advert, but which copy?")
+    span = df["scraped"].agg(["min", "max"])
+    rep(f"The file was scraped repeatedly between {span['min']:%d %b %Y} and "
+        f"{span['max']:%d %b %Y}")
+    rep(f"({(span['max'] - span['min']).days} days). An advert still online on two")
+    rep("scrape days appears twice. That is where the 36% of repeat rows comes")
+    rep("from — they are re-scrapes, not different flats.")
+
+    copies = df[ADVERT_ID].value_counts()
+    multi = df[df[ADVERT_ID].isin(copies[copies > 1].index)]
+    grouped = multi.groupby(ADVERT_ID)
+
+    # ---- 2a. what actually differs between the copies ---------------------
+    rep("")
+    rep("2a. WHAT CHANGES BETWEEN THE COPIES OF ONE ADVERT?")
+    rep("For every column, the share of repeated adverts where that column")
+    rep("takes more than one value:")
+    rep("")
+    watch = ["price", "views", "lat", "lng", "description", "Sahə", "Otaq sayı",
+             "Mərtəbə", "Kateqoriya", "location", "Təmir", "vip"]
+    varies = pd.Series(
+        {c: (grouped[c].nunique(dropna=False) > 1).mean() * 100 for c in watch}
+    ).sort_values(ascending=False)
+    rep.table(varies.round(1).rename("% of repeated adverts that change"))
+    rep("")
+    rep("The physical facts — area, rooms, floor, type, location — are stable.")
+    rep("What moves is `views` (it only ever grows) and `price`. So the copies")
+    rep("really are the same flat observed at different moments, and the only")
+    rep("thing we must choose is WHICH moment.")
+
+    # ---- 2b. how prices move ----------------------------------------------
+    rep("")
+    rep("2b. WHEN THE PRICE MOVES, WHICH WAY DOES IT GO?")
+    ordered = df.sort_values("scraped")
+    first = ordered.groupby(ADVERT_ID)[TARGET].first()
+    last = ordered.groupby(ADVERT_ID)[TARGET].last()
+    moved = first != last
+    down, up = (last[moved] < first[moved]).sum(), (last[moved] > first[moved]).sum()
+    rep(f"  adverts observed more than once: {len(copies[copies > 1]):,}")
+    rep(f"  of those, the price changed:     {moved.sum():,}")
+    rep(f"     price went DOWN: {down:,} ({down / moved.sum() * 100:.0f}%)")
+    rep(f"     price went UP:   {up:,} ({up / moved.sum() * 100:.0f}%)")
+    pct = ((last[moved] - first[moved]) / first[moved] * 100)
+    rep("")
+    rep("Size of the change, in percent of the first price:")
+    rep.table(pct.describe(percentiles=[0.1, 0.5, 0.9]).round(1))
+    rep("")
+    rep("Sellers cut their asking price far more often than they raise it —")
+    rep("the normal behaviour of a listing that is not selling. The LAST")
+    rep("observation is therefore the price the market actually saw last.")
+
+    clipped = pct.clip(-40, 40)
+    fig, ax = plt.subplots(figsize=(6.4, 3.6))
+    ax.hist(clipped[clipped < 0], bins=40, color=ORANGE, label=f"cut the price ({down:,})")
+    ax.hist(clipped[clipped > 0], bins=40, color=BLUE, label=f"raised the price ({up:,})")
+    ax.axvline(0, color=INK_SOFT, lw=1)
+    ax.legend(frameon=False, fontsize=8)
+    style(ax, "Price changes between the first and last sighting of an advert",
+          "change, % of the first price (clipped at ±40%)", "number of adverts")
+    save(fig, out_dir, "fig14_price_changes.png", rep)
+
+    fig, ax = plt.subplots(figsize=(6, 3.4))
+    counts = copies.value_counts().sort_index()
+    counts = counts[counts.index <= 8]
+    ax.bar(counts.index.astype(str), counts.to_numpy(), color=BLUE, width=0.6)
+    for x, y in zip(counts.index.astype(str), counts.to_numpy()):
+        ax.text(x, y, f"{y:,}", ha="center", va="bottom", color=INK_SOFT, fontsize=8)
+    ax.xaxis.grid(False)
+    style(ax, "How often the same advert was scraped",
+          "number of sightings", "number of adverts")
+    save(fig, out_dir, "fig15_sightings.png", rep)
+
+    # ---- 2c. the second, hidden kind of duplicate --------------------------
+    rep("")
+    rep("2c. A SECOND KIND OF DUPLICATE, EASY TO MISS.")
+    rep("Deduplicating on the advert address still leaves the same flat in the")
+    rep("file twice if an agency posted it twice under two addresses. We look")
+    rep("for adverts that agree on coordinates, area, rooms AND price:")
+    one = df.drop_duplicates(subset=[ADVERT_ID])
+    key = ["lat", "lng", "area_m2", "rooms", TARGET]
+    complete = one[key].notna().all(axis=1)
+    twins = one[complete].duplicated(subset=key, keep=False)
+    rep("")
+    rep(f"  adverts after address-deduplication: {len(one):,}")
+    rep(f"  of those, sharing all five values with another advert: {twins.sum():,}"
+        f" ({twins.mean() * 100:.1f}%)")
+    rep("")
+    rep("That is a small but real extra leak: those pairs can straddle the")
+    rep("train/test boundary. Removing them is cheap insurance.")
+
+    rep("")
+    rep("RECOMMENDATION. Two passes, both BEFORE the train/test split:")
+    rep("  1. sort by scrape date, keep the LAST sighting of each advert")
+    rep("     address — the most recent asking price, and the largest `views`.")
+    rep("  2. then drop exact twins on (lat, lng, area, rooms, price).")
+    rep(f"  Expected result: {len(one) - twins.sum() // 2:,}-ish unique properties,")
+    rep("  and report the count removed at each pass.")
+
+
+def section_window(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
+    rep.header("13. PRICE WINDOW DECISION — where do we cut impossible prices?")
+    one = df.drop_duplicates(subset=[ADVERT_ID])
+    scoped = one[one["city"].eq("bakı") & one["Kateqoriya"].isin(RESIDENTIAL)].copy()
+    scoped["ppm2"] = scoped[TARGET] / scoped["area_m2"]
+    rep(f"Measured on the recommended scope: {len(scoped):,} Baku residential adverts.")
+
+    # ---- 3a. the tails -----------------------------------------------------
+    rep("")
+    rep("3a. HOW FAR OUT THE TAILS GO.")
+    tails = scoped[TARGET].quantile([0.0001, 0.001, 0.005, 0.01, 0.5, 0.99, 0.995, 0.999, 0.9999])
+    rep.table(tails.apply(money).rename("price, AZN"))
+
+    rep("")
+    rep("3b. ARE THE EXTREMES REAL LISTINGS OR TYPING MISTAKES?")
+    cols = [TARGET, "area_m2", "rooms", "Kateqoriya", "location"]
+    cheap = scoped.nsmallest(8, TARGET)[cols].copy()
+    cheap["AZN per m²"] = (cheap[TARGET] / cheap["area_m2"]).round(0)
+    rep("")
+    rep("The eight cheapest:")
+    rep.table(cheap.to_string(index=False))
+    dear = scoped.nlargest(6, TARGET)[cols].copy()
+    dear["AZN per m²"] = (dear[TARGET] / dear["area_m2"]).round(0)
+    rep("")
+    rep("The six dearest:")
+    rep.table(dear.to_string(index=False))
+    rep("")
+    rep("A 3-room flat does not sell for 73 AZN, and 600,000,000 AZN for 200 m²")
+    rep("is 3,000,000 AZN per m² — about a thousand times the going rate, almost")
+    rep("certainly a seller who typed too many zeros. These are not rare")
+    rep("expensive flats; they are broken records.")
+
+    # ---- 3c. price per m2 is the sharper detector --------------------------
+    rep("")
+    rep("3c. PRICE PER m² SPOTS THE ERRORS BETTER THAN PRICE ALONE.")
+    rep("A cheap price is not automatically wrong — a 30 m² studio really is")
+    rep("cheap. What is wrong is a price that cannot be squared with the size.")
+    rep("")
+    rep.table(scoped["ppm2"].quantile([0.001, 0.01, 0.5, 0.99, 0.999])
+              .round(0).rename("AZN per m²"))
+    rep("")
+    rep(f"  adverts under    200 AZN/m²: {(scoped['ppm2'] < 200).sum():,}")
+    rep(f"  adverts over  20,000 AZN/m²: {(scoped['ppm2'] > 20_000).sum():,}")
+    rep("The ordinary market sits between roughly 1,000 and 5,000 AZN/m². The")
+    rep("handful outside 200-20,000 are the broken ones.")
+
+    fig, ax = plt.subplots(figsize=(6.6, 3.8))
+    valid = scoped["ppm2"].replace([np.inf, -np.inf], np.nan).dropna()
+    ax.hist(np.log10(valid[valid > 0]), bins=90, color=BLUE)
+    for edge, label in ((200, "200"), (20_000, "20,000")):
+        ax.axvline(np.log10(edge), color=ORANGE, lw=2, ls="--")
+        ax.text(np.log10(edge), ax.get_ylim()[1] * 0.92, f" {label}",
+                color=ORANGE, fontsize=8)
+    decades = range(1, 7)
+    ax.set_xticks(list(decades), [compact(10 ** d) for d in decades])
+    style(ax, "Price per m² — the bulk is tight, the errors sit far outside it",
+          "AZN per m² (log scale); dashed lines mark the proposed cut",
+          "number of adverts")
+    save(fig, out_dir, "fig16_price_per_m2.png", rep)
+
+    # ---- 3d. what each candidate window costs ------------------------------
+    rep("")
+    rep("3d. WHAT EACH CANDIDATE WINDOW COSTS.")
+    rep("")
+    candidates = [(5_000, 10_000_000), (10_000, 5_000_000),
+                  (20_000, 3_000_000), (30_000, 2_000_000)]
+    rows = {}
+    for lo, hi in candidates:
+        keep = scoped[TARGET].between(lo, hi)
+        rows[f"{compact(lo)} - {compact(hi)} AZN"] = {
+            "adverts kept": int(keep.sum()),
+            "adverts lost": int((~keep).sum()),
+            "% lost": round((~keep).mean() * 100, 2),
+        }
+    rep.table(pd.DataFrame(rows).T)
+
+    lo, hi = 10_000, 5_000_000
+    price_ok = scoped[TARGET].between(lo, hi)
+    ppm2_ok = scoped["ppm2"].between(200, 20_000)
+    rep("")
+    rep(f"Combining the price window {compact(lo)}-{compact(hi)} AZN with the")
+    rep("price-per-m² window 200-20,000 AZN/m²:")
+    rep(f"  removed by the price window only:      {(~price_ok).sum():,}")
+    rep(f"  removed by the per-m² window only:     {(~ppm2_ok).sum():,}")
+    rep(f"  removed by either:                     {(~(price_ok & ppm2_ok)).sum():,}"
+        f" ({(~(price_ok & ppm2_ok)).mean() * 100:.2f}% of the scope)")
+    rep("")
+    rep("RECOMMENDATION. Keep 10,000 <= price <= 5,000,000 AZN and")
+    rep("200 <= price/m² <= 20,000. Together they remove under 1% of the scope")
+    rep("while deleting every record that is plainly broken.")
+    rep("")
+    rep("ONE HONESTY NOTE FOR THE REPORT. These thresholds are fixed numbers")
+    rep("chosen by looking at the data, not percentiles recomputed per split.")
+    rep("That matters: a rule like 'drop the top 1%' computed on the whole file")
+    rep("would let the test set influence the training set. A fixed, declared")
+    rep("window applied identically to train, validation and test does not.")
+    rep("The report must state the window and the exact number of rows it cut.")
+
+
+def section_conclusions(df: pd.DataFrame, rep: Report) -> None:
+            rep.header("14. CONCLUSIONS — what data_prep.py has to do")
+            rep("DROP — no information:")
+            rep(f"  identifiers and scrape bookkeeping ({len(ID_AND_BOOKKEEPING)} columns): "
+                f"{', '.join(ID_AND_BOOKKEEPING)}")
+            rep("  constant columns: currency_x, currency_y, shop_title, (Binanın növü: 99.8% empty)")
+            rep("")
+            rep("DROP — leakage:")
+            rep("  total_price (identical to price), unit_price (price per m²), description")
+            rep("")
+            rep("DROP — not knowable before the sale:")
+            rep("  views")
+            rep("")
+            rep("DEDUPLICATE:")
+            rep("  one row per estate_rel_url_x, BEFORE splitting into train/test")
+            rep("")
+            rep("DECIDE A SCOPE:")
+            rep("  city is 99.7% Baku, and 'Torpaq' (bare land) / 'Obyekt' / 'Qaraj' are")
+            rep("  priced on different logic than flats. Narrowing the scope makes the")
+            rep("  task coherent; whatever we choose must be stated in the report.")
+            rep("")
+            rep("PARSE OUT OF TEXT:")
+            rep("  Sahə -> area_m2,  Mərtəbə -> floor + building_floors,")
+            rep("  Torpaq sahəsi -> land_sot")
+            rep("")
+            rep("FILL FLAGS WITH 0/1, NOT MEANS:")
+            rep(f"  {', '.join(PRESENCE_FLAGS)}")
+            rep("")
+            rep("CUT IMPOSSIBLE VALUES (and count every row removed):")
+            rep("  price outside a sane window, area <= 5 or > 1000 m²,")
+            rep("  floor above building height, coordinates outside Azerbaijan")
+            rep("")
+            rep("ENCODE:")
+            rep("  Kateqoriya and the frequent `location` values as one-hot, with a")
+            rep("  shared 'other' bucket; yes/no columns as 0/1")
+            rep("")
+            rep("TARGET:")
+            rep("  Task A on log(price);  Task B on a median split of the TRAINING set")
+            rep("")
+            rep("SCALING:")
+            rep("  the SVM needs standardised features (area is in hundreds, flags are")
+            rep("  0/1). Fit the scaler on train only, then apply it to valid/test.")
+            rep("  The decision tree does not care about scale.")
+
+
+def parse_args() -> argparse.Namespace:
+        p = argparse.ArgumentParser(description="Read-only exploration of the bina.az dataset.")
+        p.add_argument("--data", default="data/bina_az_sale.csv", help="path to the raw CSV")
+        p.add_argument("--out", default="reports/eda", help="where the report and figures go")
+        return p.parse_args()
+
+
+def main() -> int:
+        args = parse_args()
+        out_dir = Path(args.out)
+        fig_dir = out_dir / "figures"
+        fig_dir.mkdir(parents=True, exist_ok=True)
+
+        rep = Report()
+        rep("bina.az sale — exploratory data analysis")
+        rep(f"source file: {args.data}")
+        rep("this script reads the data only; it writes nothing into data/")
+
+        raw = pd.read_csv(args.data)
+        df = build_exploration_frame(raw)
+
+        section_overview(raw, rep)
+        section_missing(raw, fig_dir, rep)
+        section_duplicates(raw, fig_dir, rep)
+        section_leakage(df, rep)
+        section_target(df, fig_dir, rep)
+        section_numeric(df, fig_dir, rep)
+        section_categorical(df, fig_dir, rep)
+        section_geography(df, fig_dir, rep)
+        section_correlation(df, fig_dir, rep)
+        section_tiers(df, fig_dir, rep)
+        section_scope(df, fig_dir, rep)
+        section_dedup(df, fig_dir, rep)
+        section_window(df, fig_dir, rep)
+        section_conclusions(df, rep)
+
+        rep.save(out_dir / "eda_report.txt")
+        print(f"\nReport written to {out_dir / 'eda_report.txt'}")
+        print(f"Figures written to {fig_dir}")
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
