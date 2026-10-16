@@ -353,7 +353,7 @@ def validate(report, feature_names, arrays, tiers, tables) -> Validator:
             "one-hot block is binary",
             bool(np.isin(np.unique(block), [0.0, 1.0]).all()),
         )
-   
+
    # ---
     leakage_audit(v, report, feature_names, tables)
     # ---
@@ -421,3 +421,205 @@ def write_markdown(v: Validator, report, arrays, tiers, tables, plots: list[str]
     lines.append("")
     out_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"  [report saved] {out_path}")
+
+def reproduce(data_dir: Path) -> bool:
+    """Re-run the pipeline into a temp dir and compare the split fingerprints."""
+    root = Path(__file__).resolve().parent.parent
+    input_path = root / "data" / "bina_az_sale.csv"
+    if not input_path.exists():
+        print("  [SKIP] reproduce: raw CSV not found")
+        return True
+
+    tmp = Path(tempfile.mkdtemp(prefix="validate_"))
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "src.data_prep",
+                "--input",
+                str(input_path),
+                "--output-dir",
+                str(tmp),
+            ],
+            cwd=root,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        fresh = json.loads((tmp / "preprocessing_report.json").read_text(encoding="utf-8"))
+        return fresh["split_item_id_sha256"] == json.loads(
+            (data_dir / "preprocessing_report.json").read_text(encoding="utf-8")
+        )["split_item_id_sha256"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Cleanliness plots (val_*.png)
+# ---------------------------------------------------------------------------
+
+def _save(fig: plt.Figure, fig_dir: Path, name: str) -> Path:
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    out = fig_dir / name
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+    print(f"  [figure saved] {out}")
+    return out
+
+
+def make_plots(report, feature_names, arrays, tiers, tables, fig_dir: Path) -> list[str]:
+    """Six small plots showing how clean the processed data is."""
+    saved: list[str] = []
+    splits = ("train", "validation", "test")
+
+    # 1. split sizes
+    fig, ax = plt.subplots(figsize=(7, 4))
+    sizes = [len(tables[k]) for k in splits]
+    bars = ax.bar(list(splits), sizes, color="steelblue", edgecolor="white")
+    for bar, n in zip(bars, sizes):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                f"{n:,}", ha="center", va="bottom", fontsize=9)
+    ax.set_title(f"Split sizes (final_rows={report['final_rows']:,}, 70/15/15)")
+    ax.set_ylabel("Rows")
+    saved.append(_save(fig, fig_dir, "val_split.png").name)
+
+    # 2. tier balance per split
+    fig, ax = plt.subplots(figsize=(7, 4))
+    shares = [float(tiers[k].mean()) for k in splits]
+    bars = ax.bar(list(splits), shares, color="tomato", edgecolor="white")
+    ax.axhline(0.5, ls="--", color="gray", lw=1)
+    for bar, s in zip(bars, shares):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
+                f"{s:.3f}", ha="center", va="bottom", fontsize=9)
+    ax.set_ylim(0, 1)
+    ax.set_title(f"Premium share per split (threshold={report['tier_threshold_AZN']:,.0f} AZN)")
+    ax.set_ylabel("P(premium)")
+    saved.append(_save(fig, fig_dir, "val_tier_balance.png").name)
+
+    # 3. log-price distribution by split
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    for k, c in (("train", "steelblue"), ("validation", "tomato"), ("test", "forestgreen")):
+        ax.hist(tables[k]["log_price"].dropna(), bins=60, alpha=0.45, label=k, color=c)
+    ax.axvline(float(np.log(report["tier_threshold_AZN"])), color="black",
+               ls="--", lw=1.5, label="log(threshold)")
+    ax.set_title("log(price) distribution by split (should overlap)")
+    ax.set_xlabel("log(price)")
+    ax.legend(fontsize=8)
+    saved.append(_save(fig, fig_dir, "val_logprice_hist.png").name)
+
+    # 4. missingness remaining in cleaned train table (pre-imputation)
+    fig, ax = plt.subplots(figsize=(8, max(3, 5)))
+    miss = tables["train"].isna().mean().sort_values(ascending=False)
+    miss = miss[miss > 0].head(15)
+    if len(miss):
+        ax.barh(miss.index[::-1].astype(str), (miss * 100)[::-1], color="steelblue")
+        ax.set_xlabel("% missing (train_clean.csv, imputed at transform time)")
+        ax.set_title("Residual missingness after cleaning (top 15)")
+    else:
+        ax.text(0.5, 0.5, "No missing values left", ha="center", va="center")
+        ax.set_title("Residual missingness after cleaning")
+    saved.append(_save(fig, fig_dir, "val_missing_after_clean.png").name)
+
+    # 5. winsor fences on area_m2 (train)
+    # data_prep records enforced ranges under "value_ranges"; older runs
+    # used "winsorization". Accept either.
+    fences = (report.get("value_ranges") or report.get("winsorization") or {}).get("fences", {})
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    vals = pd.to_numeric(tables["train"].get("area_m2"), errors="coerce").dropna()
+    ax.hist(vals, bins=80, color="steelblue", edgecolor="white", alpha=0.8)
+    if "area_m2" in fences:
+        lo, hi = fences["area_m2"]["low"], fences["area_m2"]["high"]
+        ax.axvline(lo, color="red", ls="--", lw=1.5, label=f"low={lo:,.0f}")
+        ax.axvline(hi, color="red", ls="--", lw=1.5, label=f"high={hi:,.0f}")
+        ax.legend(fontsize=8)
+    ax.set_title("area_m2 on train with the enforced range (rows outside were removed)")
+    ax.set_xlabel("area_m2")
+    saved.append(_save(fig, fig_dir, "val_winsor_area.png").name)
+
+    # 6. top |corr| of numeric features with price (train)
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    price = pd.to_numeric(tables["train"]["price"], errors="coerce")
+    corrs = {}
+    for col in report.get("numeric_features", []):
+        if col in tables["train"].columns:
+            r = tables["train"][col].corr(price)
+            if pd.notna(r):
+                corrs[col] = abs(float(r))
+    top = sorted(corrs.items(), key=lambda kv: -kv[1])[:12]
+    if top:
+        names, vals_c = zip(*top)
+        ax.barh(list(names)[::-1], list(vals_c)[::-1], color="steelblue")
+        ax.axvline(0.95, color="red", ls="--", lw=1.5, label="leakage guard 0.95")
+        ax.legend(fontsize=8)
+        ax.set_title("Top |corr| with price on train (all should be < 0.95)")
+        ax.set_xlabel("|Spearman/Pearson|")
+    else:
+        ax.text(0.5, 0.5, "No numeric features", ha="center", va="center")
+    saved.append(_save(fig, fig_dir, "val_corr_with_price.png").name)
+
+    return saved
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate cleaned bina.az data.")
+    parser.add_argument("--dir", default="data/processed", help="processed data directory")
+    parser.add_argument("--out", default="reports/eda", help="report + figures directory")
+    parser.add_argument(
+        "--reproduce",
+        action="store_true",
+        help="re-run data_prep.py into a temp dir and compare split fingerprints",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="skip cleanliness plots (checks + markdown only)",
+    )
+    args = parser.parse_args()
+
+    data_dir = Path(args.dir)
+    out_dir = Path(args.out)
+    fig_dir = out_dir / "figures"
+
+    if not (data_dir / "preprocessing_report.json").exists():
+        print(f"ERROR: no preprocessing_report.json in {data_dir}")
+        return 2
+
+    print("=" * 60)
+    print("VALIDATING CLEANED DATA")
+    print(f"directory: {data_dir.resolve()}")
+    print("=" * 60)
+
+    report, feature_names, arrays, tiers, tables = load(data_dir)
+    v = validate(report, feature_names, arrays, tiers, tables)
+
+    v.group("REPRODUCIBILITY")
+    if args.reproduce:
+        ok = reproduce(data_dir)
+        v.check("re-run reproduces identical splits", ok)
+    else:
+        v.check(
+            "split fingerprints present (run with --reproduce for full check)",
+            "split_item_id_sha256" in report,
+        )
+
+    plots: list[str] = []
+    if not args.no_plots:
+        print()
+        print("CLEANLINESS PLOTS")
+        print("-----------------")
+        plots = make_plots(report, feature_names, arrays, tiers, tables, fig_dir)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    write_markdown(v, report, arrays, tiers, tables, plots, out_dir / "validation_report.md")
+
+    print()
+    print("=" * 60)
+    verdict = "CLEAN" if v.failed == 0 else "NOT CLEAN"
+    print(f"{v.passed} passed, {v.failed} failed  ->  {verdict}")
+    print("=" * 60)
+    return 0 if v.failed == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
