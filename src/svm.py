@@ -11,6 +11,21 @@ import numpy as np
 class PegasosSVM:
     """Binary linear SVM using stochastic sub-gradient updates."""
 
+    def _objective(self, X, signs):
+        """
+        Compute the regularised hinge-loss objective at the current weights.
+
+        Objective: lambda/2 * ||w||^2 + mean(max(0, 1 - y * (Xw + b))).
+        It is recorded once per epoch in fit, so the training curve can be
+        checked for convergence.
+
+        :param X: 2D array of scaled features.
+        :param signs: 1D array of labels mapped to -1/+1.
+        :return: The objective value as a float.
+        """
+        hinge = np.maximum(0.0, 1.0 - signs * (X @ self.w + self.b))
+        return float(0.5 * self.lambda_param * np.dot(self.w, self.w) + hinge.mean())
+
     def __init__(self, lambda_param=0.01, epochs=100, learning_rate="pegasos", random_state=42):
         if lambda_param <= 0:
             raise ValueError("lambda_param must be positive")
@@ -65,4 +80,5 @@ class PegasosSVM:
         self.support_vectors_ = X[self.support_vector_mask_]
         norm = np.linalg.norm(self.w)
         self.margin_width_ = float(2.0 / norm) if norm > 0 else np.inf
+
         return self
