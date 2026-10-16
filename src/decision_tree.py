@@ -408,4 +408,3 @@ class DecisionTree:
         counts = node.class_counts
         return np.asarray([counts.get(label, 0) for label in self.classes_], dtype=float) / sum(counts.values())
 
-
