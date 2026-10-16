@@ -423,6 +423,114 @@ def fig_model_comparison(
     save(fig, out, "fig4_model_comparison.png")
 
 
+
+def fig_predictions(y_true: np.ndarray, y_pred: np.ndarray, out: Path) -> None:
+    """Show how closely predicted log-prices track the real ones.
+
+    Draws two panels. The left is a scatter of predicted against actual
+    log-price with the perfect-prediction diagonal drawn on top, so any
+    systematic bend away from the line is visible. The right is a
+    histogram of the residuals, which should sit symmetrically around
+    zero if the log transform has done its job.
+
+    Args:
+        y_true: Actual log-price values for the validation split.
+        y_pred: Predicted log-price values for the same rows.
+        out: Directory in which to save the figure.
+
+    Returns:
+        None. Saves ``fig2_predictions.png`` and closes the figure.
+
+    Notes:
+        Symmetry in the residual histogram is what justifies reporting
+        ``exp(MAE) - 1`` as a percentage error: it means the model is
+        equally likely to over- and under-predict by a given ratio.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig.suptitle(
+        "Task A — Predicted vs Actual (our DecisionTree)",
+        fontsize=13,
+        fontweight="bold",
+    )
+
+    ax = axes[0]
+    ax.scatter(y_true, y_pred, s=4, alpha=0.2, color="steelblue")
+    lo, hi = y_true.min(), y_true.max()
+    ax.plot([lo, hi], [lo, hi], "r--", lw=1.5, label="perfect prediction")
+    ax.set_xlabel("actual log(price)")
+    ax.set_ylabel("predicted log(price)")
+    ax.set_title("Validation set")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    ax = axes[1]
+    resid = y_pred - y_true
+    ax.hist(resid, bins=60, color="steelblue", edgecolor="white")
+    ax.axvline(0, color="r", ls="--", lw=1.5)
+    ax.set_xlabel("residual (log units)")
+    ax.set_ylabel("count")
+    ax.set_title(f"Residuals — std = {resid.std():.3f}")
+    ax.grid(alpha=0.3)
+
+    save(fig, out, "fig2_predictions.png")
+
+
+def fig_error_analysis(y_true: np.ndarray, y_pred: np.ndarray, out: Path) -> None:
+    """Show where the model fails, in manat rather than log units.
+
+    The left panel splits the validation set into price deciles and
+    plots the median absolute percentage error of each, which exposes
+    the bands where the model is weak. The right panel is the overall
+    distribution of relative error.
+
+    Args:
+        y_true: Actual log-price values for the validation split.
+        y_pred: Predicted log-price values for the same rows.
+        out: Directory in which to save the figure.
+
+    Returns:
+        None. Saves ``fig5_error_analysis.png`` and closes the figure.
+
+    Notes:
+        Both inputs are log-prices, so ``exp(y_pred - y_true) - 1`` is the
+        relative error directly. Reporting by decile matters because a
+        single headline percentage hides that cheap flats and
+        million-manat properties are predicted far worse than the bulk
+        of the market.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig.suptitle("Task A — Error Analysis", fontsize=13, fontweight="bold")
+
+    price = np.exp(y_true)
+    pct = (np.exp(y_pred - y_true) - 1.0) * 100.0
+
+    ax = axes[0]
+    edges = np.quantile(price, np.linspace(0, 1, 11))
+    centres, medians = [], []
+    for i in range(10):
+        upper = price < edges[i + 1] if i < 9 else price <= edges[i + 1]
+        band = (price >= edges[i]) & upper
+        if band.sum():
+            centres.append(np.median(price[band]))
+            medians.append(np.median(np.abs(pct[band])))
+    ax.plot(centres, medians, "o-", color="steelblue")
+    ax.set_xscale("log")
+    ax.set_xlabel("actual price (AZN, log scale)")
+    ax.set_ylabel("median |error| (%)")
+    ax.set_title("Error by price decile")
+    ax.grid(alpha=0.3)
+
+    ax = axes[1]
+    ax.hist(np.clip(pct, -100, 200), bins=60, color="steelblue", edgecolor="white")
+    ax.axvline(0, color="r", ls="--", lw=1.5)
+    ax.set_xlabel("relative error (%)")
+    ax.set_ylabel("count")
+    ax.set_title(f"median |error| = {np.median(np.abs(pct)):.1f}%")
+    ax.grid(alpha=0.3)
+
+    save(fig, out, "fig5_error_analysis.png")
+
+
 # -----------------------------------------------------------------------------
 # MAIN
 # -----------------------------------------------------------------------------
