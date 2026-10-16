@@ -164,3 +164,29 @@ class BaggedTrees:
                 total += tree.predict(X)
             return total / len(self.estimators_)
         return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+    def predict_proba(self, X):
+        """Mean class probability across members (soft voting)."""
+        if self.task != "classification":
+            raise ValueError("predict_proba is available only for classification")
+        X = self._check(X)
+        total = np.zeros((len(X), len(self.classes_)))
+        for tree in self.estimators_:
+            total += self._aligned_proba(tree, X)
+        return total / len(self.estimators_)
+
+    def _aligned_proba(self, tree: DecisionTree, X) -> np.ndarray:
+        """A member's class probabilities, widened to the ensemble's classes.
+
+        A bootstrap sample can miss a class entirely, so a member tree may know
+        fewer classes than the ensemble. Its columns are placed under the
+        matching ensemble classes and the rest left at zero.
+        """
+        proba = tree.predict_proba(X)
+        if tree.classes_ is not None and len(tree.classes_) == len(self.classes_):
+            return proba
+        out = np.zeros((len(X), len(self.classes_)))
+        for j, label in enumerate(tree.classes_):
+            out[:, int(np.searchsorted(self.classes_, label))] = proba[:, j]
+        return out
+
