@@ -229,3 +229,16 @@ def section_target(df: pd.DataFrame, out_dir: Path, rep: Report) -> None:
     style(axes[1], "log10(price) — roughly symmetric, a usable target",
           "price, AZN on a log scale", "number of adverts")
     save(fig, out_dir, "fig03_price_distribution.png", rep)
+
+def build_exploration_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the parsed numeric columns used by the figures."""
+    out = df.copy()
+    out["area_m2"] = parse_number_from_text(out["Sahə"])
+    out["land_sot"] = parse_number_from_text(out["Torpaq sahəsi"])
+    out["unit_price_azn_m2"] = parse_number_from_text(out["unit_price"])
+    out["floor"], out["building_floors"] = parse_floor(out["Mərtəbə"])
+    out["rooms"] = pd.to_numeric(out["Otaq sayı"], errors="coerce")
+    # Scrape date, stored in the raw file as dd.mm.yyyy text. Sections 11-13
+    # need it to tell the copies of one advert apart.
+    out["scraped"] = pd.to_datetime(out["day_x"], format="%d.%m.%Y", errors="coerce")
+    return out
